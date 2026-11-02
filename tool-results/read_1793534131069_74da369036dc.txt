@@ -1,0 +1,953 @@
+     1→'use client'
+     2→
+     3→import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+     4→import { motion } from 'framer-motion'
+     5→import Footer from '../landing/footer'
+     6→import { PushPin, WashiTape } from '../landing/decor'
+     7→import { findRoadmapLevel } from '@/data/roadmap'
+     8→import { useToast } from '@/hooks/use-toast'
+     9→
+    10→/* ============================================================
+    11→   Trang học chi tiết một bài: flashcard · chế độ học · danh sách từ
+    12→   Route: #/lesson/[slug]/v/[n]  (từ vựng)  ·  #/lesson/[slug]/g/[n]  (ngữ pháp)
+    13→   ============================================================ */
+    14→
+    15→type Kind = 'v' | 'g'
+    16→
+    17→/* ---------- thẻ học dùng chung ---------- */
+    18→
+    19→type StudyCard = {
+    20→  cn: string // chữ Hán / công thức / câu ví dụ
+    21→  pinyin: string
+    22→  vi: string // nghĩa tiếng Việt
+    23→  pos?: string // phân loại từ
+    24→  example?: { cn: string; pinyin: string; vi: string } // ví dụ đầy đủ (ngữ pháp)
+    25→  speak: string // text để phát âm
+    26→}
+    27→
+    28→type Meta = {
+    29→  stars: Record<string, boolean>
+    30→  pins: Record<string, boolean>
+    31→  known: Record<string, 'known' | 'unknown'>
+    32→  studyCount: number
+    33→}
+    34→
+    35→const EMPTY_META: Meta = { stars: {}, pins: {}, known: {}, studyCount: 0 }
+    36→
+    37→/* ---------- localStorage helpers ---------- */
+    38→
+    39→function lsGet<T>(key: string, fallback: T): T {
+    40→  try {
+    41→    const raw = localStorage.getItem(key)
+    42→    return raw ? (JSON.parse(raw) as T) : fallback
+    43→  } catch {
+    44→    return fallback
+    45→  }
+    46→}
+    47→function lsSet(key: string, value: unknown) {
+    48→  try {
+    49→    localStorage.setItem(key, JSON.stringify(value))
+    50→  } catch {
+    51→    /* bỏ qua */
+    52→  }
+    53→}
+    54→
+    55→const knownKey = (slug: string, kind: Kind, n: number) => `nkhn.known:${slug}:${kind}:${n}`
+    56→const studyKey = (slug: string, kind: Kind, n: number) => `${slug}:${kind}:${n}`
+    57→
+    58→/* ---------- phát âm (Web Speech API) ---------- */
+    59→
+    60→function speak(text: string) {
+    61→  try {
+    62→    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+    63→    const u = new SpeechSynthesisUtterance(text)
+    64→    u.lang = 'zh-CN'
+    65→    u.rate = 0.85
+    66→    const voice = window.speechSynthesis.getVoices().find((v) => v.lang.toLowerCase().startsWith('zh'))
+    67→    if (voice) u.voice = voice
+    68→    window.speechSynthesis.cancel()
+    69→    window.speechSynthesis.speak(u)
+    70→  } catch {
+    71→    /* im lặng */
+    72→  }
+    73→}
+    74→
+    75→/* ---------- icon nhỏ ---------- */
+    76→
+    77→function SpeakerIcon({ className = 'h-4 w-4' }: { className?: string }) {
+    78→  return (
+    79→    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    80→      <path d="M11 5 6 9H2v6h4l5 4V5z" />
+    81→      <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+    82→      <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+    83→    </svg>
+    84→  )
+    85→}
+    86→
+    87→function PinIcon({ className = 'h-4 w-4' }: { className?: string }) {
+    88→  return (
+    89→    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    90→      <path d="M12 17v5" />
+    91→      <path d="M9 10.8V4h6v6.8a3 3 0 0 0 .6 1.8l1.8 2.4H6.6l1.8-2.4a3 3 0 0 0 .6-1.8z" />
+    92→    </svg>
+    93→  )
+    94→}
+    95→
+    96→function StarIcon({ filled, className = 'h-4 w-4' }: { filled?: boolean; className?: string }) {
+    97→  return (
+    98→    <svg viewBox="0 0 24 24" className={className} fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+    99→      <path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8L12 17.2 5.9 20.6l1.4-6.8L2.2 9.1l6.9-.8L12 2z" />
+   100→    </svg>
+   101→  )
+   102→}
+   103→
+   104→/* ---------- dữ liệu chế độ học ---------- */
+   105→
+   106→const FALLBACK_ICONS = ['🐯', '🐰', '🐼', '🐣', '🐱', '🚌', '🐷', '🐸', '🐵', '🦁', '🐨', '🐔']
+   107→
+   108→const OTHER_MODES = [
+   109→  { id: 'quiz', label: 'Trắc nghiệm', icon: '📝' },
+   110→  { id: 'typing', label: 'Gõ từ', icon: '⌨️' },
+   111→  { id: 'reading', label: 'Đọc hiểu', icon: '📖' },
+   112→  { id: 'listen', label: 'Nghe ghép câu', icon: '🎧' },
+   113→  { id: 'dance', label: 'Hanzi Dance', icon: '💃' },
+   114→  { id: 'battle', label: 'Đấu trí', icon: '⚔️', note: 'Xếp hạng' },
+   115→]
+   116→
+   117→/* ---------- nút toolbar ---------- */
+   118→
+   119→function ToolBtn({
+   120→  active,
+   121→  onClick,
+   122→  children,
+   123→  title,
+   124→}: {
+   125→  active?: boolean
+   126→  onClick: () => void
+   127→  children: React.ReactNode
+   128→  title?: string
+   129→}) {
+   130→  return (
+   131→    <button
+   132→      type="button"
+   133→      onClick={onClick}
+   134→      title={title}
+   135→      aria-pressed={active}
+   136→      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition-all duration-200 ${
+   137→        active
+   138→          ? 'bg-[#4f3d4a] text-white shadow-[0_3px_0_0_#3a2d36]'
+   139→          : 'paper-scrap text-[#6f5a68] hover:-translate-y-0.5 hover:text-[#4f3d4a]'
+   140→      }`}
+   141→    >
+   142→      {children}
+   143→    </button>
+   144→  )
+   145→}
+   146→
+   147→/* ============================================================
+   148→   Thẻ flashcard — tách thành component con để reset "flipped"
+   149→   mỗi lần đổi tab/bài (thông qua key, không cần effect)
+   150→   ============================================================ */
+   151→
+   152→function FlashcardView({
+   153→  card,
+   154→  front,
+   155→  isVocab,
+   156→  isExampleTab,
+   157→  showPinyin,
+   158→  autoSpeak,
+   159→}: {
+   160→  card: StudyCard
+   161→  front: 'zh' | 'vi'
+   162→  isVocab: boolean
+   163→  isExampleTab: boolean
+   164→  showPinyin: boolean
+   165→  autoSpeak: boolean
+   166→}) {
+   167→  const [flipped, setFlipped] = useState(false)
+   168→
+   169→  /* tự phát âm khi lật thẻ (đồng bộ với hệ thống bên ngoài, không setState) */
+   170→  useEffect(() => {
+   171→    if (flipped && autoSpeak) speak(card.speak)
+   172→  }, [flipped, autoSpeak, card])
+   173→
+   174→  return (
+   175→    <div className="relative mx-auto w-full max-w-xl" style={{ perspective: 1200 }}>
+   176→      {/* loa */}
+   177→      <button
+   178→        type="button"
+   179→        onClick={() => speak(card.speak)}
+   180→        aria-label="Nghe phát âm"
+   181→        title="Nghe phát âm"
+   182→        className="absolute -right-2 -top-2 z-20 grid h-10 w-10 place-items-center rounded-full bg-[var(--pastel-sky)] text-[#46688f] shadow-md transition-transform hover:-translate-y-0.5 hover:scale-105 sm:-right-4"
+   183→      >
+   184→        <SpeakerIcon className="h-5 w-5" />
+   185→      </button>
+   186→
+   187→      <div
+   188→        role="button"
+   189→        tabIndex={0}
+   190→        onClick={() => setFlipped((f) => !f)}
+   191→        onKeyDown={(e) => {
+   192→          if (e.key === 'Enter' || e.key === ' ') {
+   193→            e.preventDefault()
+   194→            setFlipped((f) => !f)
+   195→          }
+   196→        }}
+   197→        className="block h-[320px] w-full cursor-pointer select-none rounded-3xl text-left outline-none focus-visible:ring-2 focus-visible:ring-[#e88aa6] sm:h-[360px]"
+   198→        aria-label="Lật thẻ"
+   199→      >
+   200→        <motion.div
+   201→          animate={{ rotateY: flipped ? 180 : 0 }}
+   202→          transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
+   203→          className="relative h-full w-full"
+   204→          style={{ transformStyle: 'preserve-3d' }}
+   205→        >
+   206→          {/* mặt trước */}
+   207→          <div
+   208→            className="paper-scrap absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-3xl px-6 py-10 text-center"
+   209→            style={{ backfaceVisibility: 'hidden' }}
+   210→          >
+   211→            {isExampleTab ? (
+   212→              <>
+   213→                <p className="rounded-full bg-[var(--pastel-sky)] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-[#46688f]">Câu ví dụ</p>
+   214→                <p className="font-cn text-3xl leading-snug text-[#4f3d4a] sm:text-4xl">{card.cn}</p>
+   215→                {showPinyin && card.pinyin ? <p className="text-sm font-semibold text-[#b58fa0]">{card.pinyin}</p> : null}
+   216→              </>
+   217→            ) : front === 'zh' ? (
+   218→              <>
+   219→                {showPinyin && card.pinyin ? (
+   220→                  <p className="text-sm font-bold uppercase tracking-[0.28em] text-[#e88aa6]">{card.pinyin}</p>
+   221→                ) : null}
+   222→                <p className={`leading-none text-[#4f3d4a] ${isVocab ? 'font-cn text-6xl sm:text-7xl' : 'font-cn text-4xl sm:text-5xl'}`}>{card.cn}</p>
+   223→                {isVocab && card.pos ? (
+   224→                  <span className="rounded-full bg-[var(--cream)] px-3 py-1 text-[11px] font-bold text-[#6f5a68] ring-1 ring-[#ead9cd]">{card.pos}</span>
+   225→                ) : null}
+   226→              </>
+   227→            ) : (
+   228→              <>
+   229→                {showPinyin && card.pinyin ? <p className="text-sm font-bold uppercase tracking-[0.24em] text-[#e88aa6]">{card.pinyin}</p> : null}
+   230→                <p className="font-display text-4xl font-bold leading-snug text-[#4f3d4a] sm:text-5xl">{card.vi}</p>
+   231→                <p className="text-xs font-semibold text-[#b58fa0]">Bạn nhớ mặt kia chứ? 🤔</p>
+   232→              </>
+   233→            )}
+   234→            <p className="absolute bottom-4 text-[11px] font-bold text-[#c9a2b3]">👆 Click để lật</p>
+   235→          </div>
+   236→
+   237→          {/* mặt sau */}
+   238→          <div
+   239→            className="paper-scrap absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-3xl px-6 py-10 text-center ring-2 ring-[var(--pastel-butter)]"
+   240→            style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+   241→          >
+   242→            {isExampleTab ? (
+   243→              <>
+   244→                <p className="text-sm font-bold italic text-[#7d9cb2]">{card.pinyin}</p>
+   245→                <p className="font-display text-2xl font-bold leading-snug text-[#4f3d4a] sm:text-3xl">{card.vi}</p>
+   246→              </>
+   247→            ) : !isVocab && card.example ? (
+   248→              <>
+   249→                <p className="rounded-full bg-[var(--pastel-butter)] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-[#8a6a1f]">Ví dụ</p>
+   250→                <p className="font-cn text-3xl leading-snug text-[#3f5c74]">{card.example.cn}</p>
+   251→                {showPinyin ? <p className="text-sm font-semibold italic text-[#7d9cb2]">{card.example.pinyin}</p> : null}
+   252→                <p className="text-sm font-bold text-[#6f5a68]">→ {card.example.vi}</p>
+   253→              </>
+   254→            ) : front === 'zh' ? (
+   255→              <>
+   256→                {showPinyin && card.pinyin ? <p className="text-sm font-bold uppercase tracking-[0.24em] text-[#e88aa6]">{card.pinyin}</p> : null}
+   257→                <p className="font-display text-4xl font-bold leading-snug text-[#4f3d4a] sm:text-5xl">{card.vi}</p>
+   258→                {isVocab && card.pos ? (
+   259→                  <span className="rounded-full bg-[var(--pastel-butter)] px-3 py-1 text-[11px] font-bold text-[#8a6a1f]">{card.pos}</span>
+   260→                ) : null}
+   261→              </>
+   262→            ) : (
+   263→              <>
+   264→                <p className={`leading-none text-[#4f3d4a] ${isVocab ? 'font-cn text-6xl sm:text-7xl' : 'font-cn text-4xl'}`}>{card.cn}</p>
+   265→                {showPinyin && card.pinyin ? <p className="text-sm font-bold uppercase tracking-[0.24em] text-[#e88aa6]">{card.pinyin}</p> : null}
+   266→              </>
+   267→            )}
+   268→            <button
+   269→              type="button"
+   270→              onClick={(e) => { e.stopPropagation(); speak(card.speak) }}
+   271→              className="absolute bottom-3 right-3 grid h-9 w-9 place-items-center rounded-full bg-[var(--pastel-sky)]/80 text-[#46688f] transition-transform hover:scale-110"
+   272→              aria-label="Nghe phát âm"
+   273→            >
+   274→              <SpeakerIcon className="h-4 w-4" />
+   275→            </button>
+   276→          </div>
+   277→        </motion.div>
+   278→      </div>
+   279→    </div>
+   280→  )
+   281→}
+   282→
+   283→/* ============================================================ */
+   284→
+   285→export default function LessonStudy({ slug, kind, n }: { slug?: string; kind?: Kind; n?: number }) {
+   286→  const { toast } = useToast()
+   287→  const level = findRoadmapLevel(slug)
+   288→  const k: Kind = kind === 'g' ? 'g' : 'v'
+   289→  const num = Number(n) || 1
+   290→
+   291→  const vocabLesson = level?.vocab.find((l) => l.n === num)
+   292→  const grammarLesson = level?.grammar.find((l) => l.n === num)
+   293→
+   294→  /* ----- trạng thái học ----- */
+   295→  const [showPinyin, setShowPinyin] = useState(true)
+   296→  const [autoSpeak, setAutoSpeak] = useState(false)
+   297→  const [tab, setTab] = useState<'card' | 'example'>('card')
+   298→  const [front, setFront] = useState<'zh' | 'vi'>('zh')
+   299→  const [auto, setAuto] = useState(false)
+   300→  const [idx, setIdx] = useState(0)
+   301→  const [shuffled, setShuffled] = useState<{ key: string; order: number[] } | null>(null)
+   302→  const [settingsOpen, setSettingsOpen] = useState(false)
+   303→  const [meta, setMeta] = useState<Meta>(EMPTY_META)
+   304→  const countedRef = useRef(false)
+   305→
+   306→  const deckKey = `${k}:${num}:${tab}`
+   307→
+   308→  /* ----- bộ thẻ ----- */
+   309→  const cards: StudyCard[] = useMemo(() => {
+   310→    if (!level) return []
+   311→    if (tab === 'example') {
+   312→      if (k === 'v') {
+   313→        return vocabLesson
+   314→          ? vocabLesson.words.filter((w) => w.ex).map((w) => ({ cn: w.ex!.cn, pinyin: w.ex!.pinyin, vi: w.ex!.vi, speak: w.ex!.cn }))
+   315→          : []
+   316→      }
+   317→      return grammarLesson
+   318→        ? [{ cn: grammarLesson.example.cn, pinyin: grammarLesson.example.pinyin, vi: grammarLesson.example.vi, speak: grammarLesson.example.cn }]
+   319→        : []
+   320→    }
+   321→    if (k === 'v') {
+   322→      return vocabLesson
+   323→        ? vocabLesson.words.map((w) => ({ cn: w.cn, pinyin: w.pinyin, vi: w.vi, pos: w.pos, speak: w.cn }))
+   324→        : []
+   325→    }
+   326→    return grammarLesson
+   327→      ? [{ cn: grammarLesson.structure, pinyin: grammarLesson.cn ?? '', vi: grammarLesson.point, example: grammarLesson.example, speak: grammarLesson.example.cn }]
+   328→      : []
+   329→  }, [level, k, tab, vocabLesson, grammarLesson])
+   330→
+   331→  /* thứ tự thẻ: dùng thứ tự xáo trộn nếu còn hợp lệ, ngược lại theo thứ tự gốc
+   332→     (đổi tab/bài sẽ tự về thứ tự gốc vì key của trạng thái xáo trộn không còn khớp) */
+   333→  const order = useMemo(() => {
+   334→    if (shuffled && shuffled.key === deckKey && shuffled.order.length === cards.length) return shuffled.order
+   335→    return cards.map((_, i) => i)
+   336→  }, [shuffled, deckKey, cards])
+   337→
+   338→  const total = cards.length
+   339→  const safeIdx = Math.min(idx, Math.max(total - 1, 0))
+   340→  const cardIndex = tab === 'card' ? order[safeIdx] ?? safeIdx : safeIdx
+   341→  const card: StudyCard | undefined = cards[safeIdx]
+   342→
+   343→  /* ----- khôi phục trạng thái từ localStorage + đếm lượt học ----- */
+   344→  useEffect(() => {
+   345→    if (!level) return
+   346→    const studies = lsGet<Record<string, number>>('nkhn.studies', {})
+   347→    if (!countedRef.current) {
+   348→      countedRef.current = true
+   349→      const key = studyKey(level.slug, k, num)
+   350→      studies[key] = (studies[key] ?? 0) + 1
+   351→      lsSet('nkhn.studies', studies)
+   352→    }
+   353→    // eslint-disable-next-line react-hooks/set-state-in-effect
+   354→    setMeta({
+   355→      stars: lsGet('nkhn.stars', {}),
+   356→      pins: lsGet('nkhn.pins', {}),
+   357→      known: lsGet(knownKey(level.slug, k, num), {}),
+   358→      studyCount: studies[studyKey(level.slug, k, num)] ?? 0,
+   359→    })
+   360→  }, [level, k, num])
+   361→
+   362→  const shuffle = useCallback(() => {
+   363→    const arr = cards.map((_, i) => i)
+   364→    for (let i = arr.length - 1; i > 0; i--) {
+   365→      const j = Math.floor(Math.random() * (i + 1))
+   366→      ;[arr[i], arr[j]] = [arr[j], arr[i]]
+   367→    }
+   368→    setShuffled({ key: deckKey, order: arr })
+   369→    setIdx(0)
+   370→    toast({ title: '🔀 Đã xáo trộn bộ thẻ!' })
+   371→  }, [cards, deckKey, toast])
+   372→
+   373→  /* ----- điều hướng thẻ ----- */
+   374→  const go = useCallback(
+   375→    (d: 1 | -1) => {
+   376→      setIdx((i) => {
+   377→        if (total === 0) return 0
+   378→        const s = Math.min(i, total - 1)
+   379→        if (d === 1) return s + 1 >= total ? 0 : s + 1
+   380→        return s - 1 < 0 ? total - 1 : s - 1
+   381→      })
+   382→    },
+   383→    [total],
+   384→  )
+   385→
+   386→  const next = useCallback(() => go(1), [go])
+   387→
+   388→  /* tự động chuyển thẻ */
+   389→  useEffect(() => {
+   390→    if (!auto || total === 0) return
+   391→    const t = setInterval(next, 3200)
+   392→    return () => clearInterval(t)
+   393→  }, [auto, next, total])
+   394→
+   395→  /* đánh dấu thuộc / chưa thuộc */
+   396→  const mark = useCallback(
+   397→    (m: 'known' | 'unknown') => {
+   398→      if (!level || total === 0) return
+   399→      const id = `${k}:${num}:${cardIndex}`
+   400→      setMeta((prev) => {
+   401→        const nextMeta = { ...prev, known: { ...prev.known, [id]: m } }
+   402→        lsSet(knownKey(level.slug, k, num), nextMeta.known)
+   403→        return nextMeta
+   404→      })
+   405→      if (m === 'known') toast({ title: '✓ Giỏi lắm! Đã thuộc thẻ này.' })
+   406→      else toast({ title: '✗ Không sao, lần sau nhớ nhé!' })
+   407→      next()
+   408→    },
+   409→    [level, total, cardIndex, k, num, next, toast],
+   410→  )
+   411→
+   412→  /* bàn phím */
+   413→  useEffect(() => {
+   414→    const onKey = (e: KeyboardEvent) => {
+   415→      if (e.target instanceof HTMLElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return
+   416→      if (e.key === 'ArrowRight') next()
+   417→      else if (e.key === 'ArrowLeft') go(-1)
+   418→      else if (e.key === ' ') {
+   419→        e.preventDefault()
+   420→        document.querySelector<HTMLElement>('[aria-label="Lật thẻ"]')?.click()
+   421→      } else if (e.key === '1') mark('unknown')
+   422→      else if (e.key === '2') mark('known')
+   423→    }
+   424→    document.addEventListener('keydown', onKey)
+   425→    return () => document.removeEventListener('keydown', onKey)
+   426→  }, [next, go, mark])
+   427→
+   428→  /* toàn màn hình */
+   429→  const toggleFullscreen = () => {
+   430→    try {
+   431→      if (document.fullscreenElement) void document.exitFullscreen()
+   432→      else void document.documentElement.requestFullscreen()
+   433→    } catch {
+   434→      /* bỏ qua */
+   435→    }
+   436→  }
+   437→
+   438→  /* ghim / sao */
+   439→  const toggleStar = (id: string) => {
+   440→    setMeta((prev) => {
+   441→      const nextMeta = { ...prev, stars: { ...prev.stars, [id]: !prev.stars[id] } }
+   442→      lsSet('nkhn.stars', nextMeta.stars)
+   443→      return nextMeta
+   444→    })
+   445→  }
+   446→  const togglePin = (id: string) => {
+   447→    const wasPinned = !!meta.pins[id]
+   448→    setMeta((prev) => {
+   449→      const nextMeta = { ...prev, pins: { ...prev.pins, [id]: !prev.pins[id] } }
+   450→      lsSet('nkhn.pins', nextMeta.pins)
+   451→      return nextMeta
+   452→    })
+   453→    toast({
+   454→      title: wasPinned ? '📌 Đã bỏ khỏi bộ thẻ' : '📌 Đã thêm vào bộ thẻ của bạn!',
+   455→      description: wasPinned ? undefined : 'Xem lại trong menu 🃏 Bộ thẻ của tôi.',
+   456→    })
+   457→  }
+   458→
+   459→  /* ---------- không tìm thấy ---------- */
+   460→  if (!level || (k === 'v' ? !vocabLesson : !grammarLesson)) {
+   461→    return (
+   462→      <div className="min-h-screen bg-[#fff6e9] text-[#5d4a57]">
+   463→        <main className="flex min-h-screen items-center justify-center px-4 pb-16">
+   464→          <div className="paper-scrap relative -rotate-1 rounded-2xl px-8 py-10 text-center">
+   465→            <PushPin color="#e8737f" className="absolute -top-2.5 left-8" />
+   466→            <p className="font-cn text-5xl text-[#c2547e]">迷路</p>
+   467→            <h1 className="mt-3 font-display text-xl font-bold text-[#4f3d4a]">Không tìm thấy bài học này</h1>
+   468→            <a
+   469→              href={level ? `#/roadmap/${level.slug}` : '#/'}
+   470→              className="mt-6 inline-block rounded-full bg-[#e8737f] px-6 py-3 text-sm font-bold text-white shadow-[0_5px_0_0_#d1708f] transition-transform hover:-translate-y-0.5"
+   471→            >
+   472→              ← Về danh sách bài
+   473→            </a>
+   474→          </div>
+   475→        </main>
+   476→      </div>
+   477→    )
+   478→  }
+   479→
+   480→  const lessonIcon = k === 'v' && vocabLesson?.icon ? vocabLesson.icon : FALLBACK_ICONS[(num - 1) % FALLBACK_ICONS.length]
+   481→  const knownCount = Object.values(meta.known).filter((v) => v === 'known').length
+   482→  const isVocab = k === 'v'
+   483→  const backHref = `#/roadmap/${level.slug}`
+   484→  const subLabel = isVocab ? `Bài ${num} — Từ vựng ${level.code}` : `Ngữ pháp ${num} — ${level.code}`
+   485→  const bigTitle = isVocab ? vocabLesson!.topic : grammarLesson!.point
+   486→  const chipLabel = isVocab ? `${vocabLesson!.words.length} từ vựng` : `${level.grammar.length} điểm ngữ pháp`
+   487→  const tabA = isVocab ? 'Từ vựng' : 'Cấu trúc'
+   488→  const isExampleTab = tab === 'example'
+   489→
+   490→  return (
+   491→    <div className="min-h-screen bg-[#fff6e9] text-[#5d4a57]">
+   492→      <main className="relative pb-20 pt-20 sm:pt-24">
+   493→        <div aria-hidden="true" className="dot-grid absolute inset-0" />
+   494→
+   495→        <div className="relative mx-auto max-w-5xl px-4 sm:px-6">
+   496→          {/* nút quay lại */}
+   497→          <a
+   498→            href={backHref}
+   499→            className="inline-flex items-center gap-1.5 text-xs font-bold text-[#8d7484] transition-colors hover:text-[#e8737f]"
+   500→          >
+   501→            ← Danh sách bài
+   502→          </a>
+   503→
+   504→          {/* ================= 1. Header bài học ================= */}
+   505→          <header className="paper-scrap relative mt-3 rounded-2xl px-5 py-6 sm:px-7">
+   506→            <WashiTape color={level.tape} pattern="dots" rotate={-5} className="-top-3 left-10 h-6 w-20" />
+   507→            <PushPin color="#f0b429" className="absolute right-8 top-3 scale-75" />
+   508→
+   509→            <div className="flex flex-wrap items-center gap-2">
+   510→              <span
+   511→                className="rounded-full px-3 py-1 text-[11px] font-bold text-[#7a4b5e]"
+   512→                style={{ backgroundColor: level.tape }}
+   513→              >
+   514→                {isVocab ? `Bài ${num}` : `Ngữ pháp ${num}`}
+   515→              </span>
+   516→              <span className="rounded-full bg-[var(--cream)] px-3 py-1 text-[11px] font-bold text-[#6f5a68] ring-1 ring-[#ead9cd]">
+   517→                {chipLabel}
+   518→              </span>
+   519→              {knownCount > 0 && (
+   520→                <span className="rounded-full bg-[var(--pastel-mint)] px-3 py-1 text-[11px] font-bold text-[#3f6b50]">
+   521→                  ✓ {knownCount} đã thuộc
+   522→                </span>
+   523→              )}
+   524→            </div>
+   525→
+   526→            <div className="mt-3 flex flex-wrap items-center gap-4">
+   527→              <span className="grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-[var(--cream)] text-4xl shadow-inner ring-1 ring-[#ead9cd]" aria-hidden="true">
+   528→                {lessonIcon}
+   529→              </span>
+   530→              <div className="min-w-0 flex-1">
+   531→                <h1 className="leading-tight">
+   532→                  <span className="relative inline-block px-3 py-0.5">
+   533→                    <span aria-hidden="true" className="absolute inset-0 -rotate-1 rounded-md bg-[var(--pastel-butter)] opacity-90" />
+   534→                    <span className="relative font-display text-2xl font-bold text-[#4f3d4a] sm:text-3xl">{bigTitle}</span>
+   535→                  </span>
+   536→                  {isVocab && vocabLesson?.cn ? <span className="ml-2 font-cn text-xl text-[#b58fa0]">{vocabLesson.cn}</span> : null}
+   537→                </h1>
+   538→                <p className="mt-1.5 text-sm font-semibold text-[#8d7484]">
+   539→                  {subLabel}
+   540→                  {isVocab && vocabLesson?.pinyin ? <span className="ml-2 font-cn text-[#b58fa0]">{vocabLesson.pinyin}</span> : null}
+   541→                </p>
+   542→              </div>
+   543→
+   544→              {/* nút pinyin */}
+   545→              <button
+   546→                type="button"
+   547→                onClick={() => setShowPinyin((v) => !v)}
+   548→                aria-pressed={showPinyin}
+   549→                title="Bật / tắt phiên âm"
+   550→                className={`ml-auto inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold shadow-sm transition-all hover:-translate-y-0.5 ${
+   551→                  showPinyin ? 'bg-[var(--pastel-sky)] text-[#46688f]' : 'paper-scrap text-[#8d7484]'
+   552→                }`}
+   553→              >
+   554→                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+   555→                  <rect x="3" y="5" width="18" height="14" rx="2" />
+   556→                  <path d="M7 15V9l2.5 3L12 9v6M15 9h3M15 12h2.5M15 15h3" />
+   557→                </svg>
+   558→                Pinyin: {showPinyin ? 'Bật' : 'Tắt'}
+   559→              </button>
+   560→            </div>
+   561→          </header>
+   562→
+   563→          {/* ================= 2. Thanh công cụ ================= */}
+   564→          <div className="mt-4 flex flex-wrap items-center gap-2 rounded-2xl bg-white/70 p-2.5 ring-1 ring-[#f0e2d4]">
+   565→            {/* tabs */}
+   566→            <div className="flex items-center gap-1" role="tablist" aria-label="Chế độ xem thẻ">
+   567→              <ToolBtn active={!isExampleTab} onClick={() => { setTab('card'); setIdx(0) }}>
+   568→                {tabA}
+   569→              </ToolBtn>
+   570→              <ToolBtn active={isExampleTab} onClick={() => { setTab('example'); setIdx(0) }}>
+   571→                Ví dụ
+   572→              </ToolBtn>
+   573→            </div>
+   574→
+   575→            {/* bộ đếm */}
+   576→            <span className="mx-auto rounded-full bg-[var(--cream)] px-4 py-1.5 font-display text-sm font-bold text-[#6f5a68] ring-1 ring-[#ead9cd]">
+   577→              {total === 0 ? '0 / 0' : `${safeIdx + 1} / ${total}`}
+   578→            </span>
+   579→
+   580→            {/* điều khiển */}
+   581→            <div className="flex flex-wrap items-center gap-1.5">
+   582→              {isVocab && (
+   583→                <ToolBtn active={front === 'vi'} onClick={() => setFront((f) => (f === 'zh' ? 'vi' : 'zh'))} title="Đổi mặt hiển thị của thẻ">
+   584→                  VI → ZH
+   585→                </ToolBtn>
+   586→              )}
+   587→              <ToolBtn active={auto} onClick={() => setAuto((v) => !v)} title="Tự động chuyển thẻ sau ~3 giây">
+   588→                ▶ Tự động
+   589→              </ToolBtn>
+   590→              <ToolBtn onClick={shuffle} title="Xáo trộn thứ tự thẻ">
+   591→                🔀 Xáo trộn
+   592→              </ToolBtn>
+   593→
+   594→              <button
+   595→                type="button"
+   596→                onClick={toggleFullscreen}
+   597→                title="Toàn màn hình"
+   598→                aria-label="Toàn màn hình"
+   599→                className="grid h-8 w-8 place-items-center rounded-full text-[#8d7484] transition-colors hover:bg-[var(--pastel-butter)]/60 hover:text-[#4f3d4a]"
+   600→              >
+   601→                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+   602→                  <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+   603→                </svg>
+   604→              </button>
+   605→
+   606→              <div className="relative">
+   607→                <button
+   608→                  type="button"
+   609→                  onClick={() => setSettingsOpen((v) => !v)}
+   610→                  title="Cài đặt"
+   611→                  aria-label="Cài đặt"
+   612→                  aria-expanded={settingsOpen}
+   613→                  className={`grid h-8 w-8 place-items-center rounded-full transition-colors hover:bg-[var(--pastel-butter)]/60 hover:text-[#4f3d4a] ${settingsOpen ? 'bg-[var(--pastel-butter)]/80 text-[#4f3d4a]' : 'text-[#8d7484]'}`}
+   614→                >
+   615→                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+   616→                    <circle cx="12" cy="12" r="3" />
+   617→                    <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z" />
+   618→                  </svg>
+   619→                </button>
+   620→
+   621→                {settingsOpen && (
+   622→                  <motion.div
+   623→                    initial={{ opacity: 0, y: -6 }}
+   624→                    animate={{ opacity: 1, y: 0 }}
+   625→                    transition={{ duration: 0.18 }}
+   626→                    className="paper-scrap absolute right-0 top-10 z-30 w-56 rounded-2xl p-3"
+   627→                    role="dialog"
+   628→                    aria-label="Cài đặt thẻ"
+   629→                  >
+   630→                    <p className="pb-1.5 font-display text-xs font-bold text-[#4f3d4a]">Cài đặt học</p>
+   631→                    {[
+   632→                      { label: 'Tự phát âm khi lật', value: autoSpeak, set: setAutoSpeak },
+   633→                      { label: 'Hiện phiên âm Pinyin', value: showPinyin, set: setShowPinyin },
+   634→                    ].map((s) => (
+   635→                      <button
+   636→                        key={s.label}
+   637→                        type="button"
+   638→                        role="switch"
+   639→                        aria-checked={s.value}
+   640→                        onClick={() => s.set(!s.value)}
+   641→                        className="flex w-full items-center justify-between gap-2 rounded-xl px-2 py-2 text-left text-xs font-semibold text-[#6f5a68] transition-colors hover:bg-[var(--cream)]"
+   642→                      >
+   643→                        {s.label}
+   644→                        <span className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${s.value ? 'bg-[#8fbf7f]' : 'bg-[#e0d2c4]'}`}>
+   645→                          <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${s.value ? 'left-[1.15rem]' : 'left-0.5'}`} />
+   646→                        </span>
+   647→                      </button>
+   648→                    ))}
+   649→                  </motion.div>
+   650→                )}
+   651→              </div>
+   652→            </div>
+   653→          </div>
+   654→
+   655→          {/* ================= 3. Thẻ flashcard chính ================= */}
+   656→          <section className="mt-6" aria-label="Thẻ học">
+   657→            {total === 0 || !card ? (
+   658→              <div className="paper-scrap rounded-2xl px-6 py-12 text-center">
+   659→                <p className="font-cn text-4xl text-[#c2547e]">没有例子</p>
+   660→                <p className="mt-2 text-sm font-semibold text-[#8d7484]">Bài này chưa có câu ví dụ — hãy xem ở tab {tabA} nhé!</p>
+   661→              </div>
+   662→            ) : (
+   663→              <>
+   664→                {/* key = deckKey → đổi tab/bài là thẻ tự lật về mặt trước */}
+   665→                <FlashcardView
+   666→                  key={deckKey}
+   667→                  card={card}
+   668→                  front={front}
+   669→                  isVocab={isVocab}
+   670→                  isExampleTab={isExampleTab}
+   671→                  showPinyin={showPinyin}
+   672→                  autoSpeak={autoSpeak}
+   673→                />
+   674→
+   675→                {/* dots tiến độ */}
+   676→                <div className="mt-4 flex flex-wrap items-center justify-center gap-1.5" aria-hidden="true">
+   677→                  {cards.map((_, i) => {
+   678→                    const id = `${k}:${num}:${tab === 'card' ? order[i] ?? i : i}`
+   679→                    const st = meta.known[id]
+   680→                    return (
+   681→                      <span
+   682→                        key={i}
+   683→                        className={`h-2 rounded-full transition-all ${
+   684→                          i === safeIdx ? 'w-5 bg-[#e8737f]' : st === 'known' ? 'w-2 bg-[#8fbf7f]' : st === 'unknown' ? 'w-2 bg-[#f0a2a2]' : 'w-2 bg-[#eadfd6]'
+   685→                        }`}
+   686→                      />
+   687→                    )
+   688→                  })}
+   689→                </div>
+   690→
+   691→                {/* điều hướng thẻ */}
+   692→                <div className="mx-auto mt-4 flex w-full max-w-xl flex-wrap items-center justify-center gap-2">
+   693→                  <button
+   694→                    type="button"
+   695→                    onClick={() => go(-1)}
+   696→                    className="paper-scrap rounded-full px-4 py-2.5 text-xs font-bold text-[#6f5a68] transition-transform hover:-translate-y-0.5"
+   697→                  >
+   698→                    ← Trước
+   699→                  </button>
+   700→                  <button
+   701→                    type="button"
+   702→                    onClick={() => mark('unknown')}
+   703→                    className="rounded-full bg-[#e26d6d] px-4 py-2.5 text-xs font-bold text-white shadow-[0_3px_0_0_#c25454] transition-transform hover:-translate-y-0.5 active:translate-y-0.5 active:shadow-none"
+   704→                  >
+   705→                    ✕ Chưa thuộc
+   706→                  </button>
+   707→                  <button
+   708→                    type="button"
+   709→                    onClick={() => mark('known')}
+   710→                    className="rounded-full bg-[#7fbf6e] px-4 py-2.5 text-xs font-bold text-white shadow-[0_3px_0_0_#5f9f50] transition-transform hover:-translate-y-0.5 active:translate-y-0.5 active:shadow-none"
+   711→                  >
+   712→                    ✓ Đã thuộc
+   713→                  </button>
+   714→                  <button
+   715→                    type="button"
+   716→                    onClick={next}
+   717→                    className="paper-scrap rounded-full px-4 py-2.5 text-xs font-bold text-[#6f5a68] transition-transform hover:-translate-y-0.5"
+   718→                  >
+   719→                    Sau →
+   720→                  </button>
+   721→                </div>
+   722→                <p className="mt-2 text-center text-[10px] font-semibold text-[#c9a2b3]">
+   723→                  Phím tắt: ← → chuyển thẻ · Space lật · 1 Chưa thuộc · 2 Đã thuộc
+   724→                </p>
+   725→              </>
+   726→            )}
+   727→          </section>
+   728→
+   729→          {/* ================= 4. Chọn chế độ học ================= */}
+   730→          <section className="mt-10" aria-label="Chọn chế độ học">
+   731→            <div className="flex flex-wrap items-end justify-between gap-2">
+   732→              <div>
+   733→                <h2 className="font-display text-xl font-bold text-[#4f3d4a]">Chọn chế độ học</h2>
+   734→                <p className="text-xs font-semibold text-[#8d7484]">Mỗi ngày một trò — học mà chơi, chơi mà học.</p>
+   735→              </div>
+   736→              <button
+   737→                type="button"
+   738→                onClick={() =>
+   739→                  toast({
+   740→                    title: '⌨️ Hướng dẫn gõ pinyin',
+   741→                    description: 'Gõ không dấu: "ni hao" → 你好, hoặc kèm thanh điệu: "ni3 hao3".',
+   742→                  })
+   743→                }
+   744→                className="rounded-full px-3 py-1.5 text-xs font-bold text-[#8d7484] underline decoration-dotted underline-offset-4 transition-colors hover:text-[#e8737f]"
+   745→              >
+   746→                Hướng dẫn gõ
+   747→              </button>
+   748→            </div>
+   749→
+   750→            <div className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-7">
+   751→              <button
+   752→                type="button"
+   753→                onClick={() => toast({ title: '🃏 Flashcard', description: 'Bạn đang học ở chế độ này rồi!' })}
+   754→                className="flex flex-col items-start gap-1.5 rounded-2xl bg-[#4f3d4a] p-3 text-left text-white shadow-[0_4px_0_0_#3a2d36] transition-transform hover:-translate-y-1"
+   755→              >
+   756→                <span className="text-xl" aria-hidden="true">🃏</span>
+   757→                <span className="text-xs font-bold">Flashcard</span>
+   758→                <span className="text-[10px] font-semibold opacity-75">{meta.studyCount > 0 ? `Đã học ${meta.studyCount} lần` : 'Chưa học'}</span>
+   759→              </button>
+   760→
+   761→              {OTHER_MODES.map((m) => (
+   762→                <button
+   763→                  key={m.id}
+   764→                  type="button"
+   765→                  onClick={() =>
+   766→                    toast({
+   767→                      title: `${m.icon} ${m.label}`,
+   768→                      description: m.note === 'Xếp hạng' ? 'Chế độ xếp hạng sẽ mở sớm — luyện Flashcard thật giỏi nhé!' : 'Chế độ này đang được hoàn thiện, sẽ sớm ra mắt!',
+   769→                    })
+   770→                  }
+   771→                  className="paper-scrap flex flex-col items-start gap-1.5 rounded-2xl p-3 text-left transition-transform hover:-translate-y-1"
+   772→                >
+   773→                  <span className="text-xl" aria-hidden="true">{m.icon}</span>
+   774→                  <span className="text-xs font-bold text-[#4f3d4a]">{m.label}</span>
+   775→                  <span className="text-[10px] font-semibold text-[#b58fa0]">{m.note ?? 'Chưa học'}</span>
+   776→                </button>
+   777→              ))}
+   778→            </div>
+   779→          </section>
+   780→
+   781→          {/* ================= 5. Thanh hành động ================= */}
+   782→          <div className="mt-8 flex flex-wrap items-center justify-end gap-2">
+   783→            <button
+   784→              type="button"
+   785→              onClick={() => window.print()}
+   786→              className="paper-scrap inline-flex items-center gap-1.5 rounded-full px-4 py-2.5 text-xs font-bold text-[#6f5a68] transition-transform hover:-translate-y-0.5"
+   787→            >
+   788→              🖨 In file
+   789→            </button>
+   790→            <button
+   791→              type="button"
+   792→              onClick={() => toast({ title: '🗃️ Cả bài đã có trong bộ thẻ!', description: 'Mở menu 🃏 Bộ thẻ của tôi để ôn lại bất cứ lúc nào.' })}
+   793→              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--pastel-mint)] px-4 py-2.5 text-xs font-bold text-[#3f6b50] shadow-sm transition-transform hover:-translate-y-0.5"
+   794→            >
+   795→              ✓ Cả bài đã có trong bộ thẻ
+   796→            </button>
+   797→          </div>
+   798→
+   799→          {/* ================= 6. Danh sách từ vựng / ngữ pháp ================= */}
+   800→          <section className="mt-8" aria-label={isVocab ? 'Danh sách từ vựng' : 'Danh sách điểm ngữ pháp'}>
+   801→            <div className="flex flex-wrap items-end justify-between gap-2">
+   802→              <h2 className="font-display text-xl font-bold text-[#4f3d4a]">
+   803→                {isVocab ? `Danh sách từ vựng (${vocabLesson!.words.length})` : `Danh sách điểm ngữ pháp (${level.grammar.length})`}
+   804→              </h2>
+   805→              <p className="text-xs font-semibold text-[#8d7484]">Bấm ghim để thêm vào bộ thẻ · bấm loa để nghe phát âm</p>
+   806→            </div>
+   807→
+   808→            {isVocab ? (
+   809→              <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+   810→                {vocabLesson!.words.map((w, i) => {
+   811→                  const id = `v:${num}:${i}`
+   812→                  const st = meta.known[`v:${num}:${i}`]
+   813→                  return (
+   814→                    <motion.article
+   815→                      key={`${w.cn}-${i}`}
+   816→                      initial={{ opacity: 0, y: 18 }}
+   817→                      whileInView={{ opacity: 1, y: 0 }}
+   818→                      viewport={{ once: true, margin: '-30px' }}
+   819→                      transition={{ duration: 0.4, delay: (i % 3) * 0.06, ease: [0.22, 1, 0.36, 1] }}
+   820→                      className={`relative rounded-2xl bg-white/85 p-4 ring-1 transition-shadow hover:shadow-md ${
+   821→                        st === 'known' ? 'ring-2 ring-[#8fbf7f]' : st === 'unknown' ? 'ring-2 ring-[#f0a2a2]' : 'ring-[#f0e2d4]'
+   822→                      }`}
+   823→                    >
+   824→                      {/* header: STT + icon */}
+   825→                      <div className="flex items-center justify-between">
+   826→                        <span className="font-display text-sm font-bold text-[#c9a2b3]">{i + 1}.</span>
+   827→                        <div className="flex items-center gap-1">
+   828→                          <button
+   829→                            type="button"
+   830→                            onClick={() => togglePin(id)}
+   831→                            aria-label={meta.pins[id] ? 'Bỏ ghim' : 'Ghim vào bộ thẻ'}
+   832→                            aria-pressed={!!meta.pins[id]}
+   833→                            className={`grid h-7 w-7 place-items-center rounded-full transition-colors ${meta.pins[id] ? 'bg-[var(--pastel-sky)] text-[#46688f]' : 'text-[#c9b8c4] hover:bg-[var(--cream)] hover:text-[#8d7484]'}`}
+   834→                          >
+   835→                            <PinIcon className="h-3.5 w-3.5" />
+   836→                          </button>
+   837→                          <button
+   838→                            type="button"
+   839→                            onClick={() => toggleStar(id)}
+   840→                            aria-label={meta.stars[id] ? 'Bỏ đánh dấu sao' : 'Đánh dấu sao'}
+   841→                            aria-pressed={!!meta.stars[id]}
+   842→                            className={`grid h-7 w-7 place-items-center rounded-full transition-colors ${meta.stars[id] ? 'text-[#f0b429]' : 'text-[#c9b8c4] hover:bg-[var(--cream)] hover:text-[#8d7484]'}`}
+   843→                          >
+   844→                            <StarIcon filled={!!meta.stars[id]} className="h-3.5 w-3.5" />
+   845→                          </button>
+   846→                          <button
+   847→                            type="button"
+   848→                            onClick={() => speak(w.cn)}
+   849→                            aria-label={`Nghe từ ${w.vi}`}
+   850→                            className="grid h-7 w-7 place-items-center rounded-full text-[#c9b8c4] transition-colors hover:bg-[var(--pastel-sky)]/60 hover:text-[#46688f]"
+   851→                          >
+   852→                            <SpeakerIcon className="h-3.5 w-3.5" />
+   853→                          </button>
+   854→                        </div>
+   855→                      </div>
+   856→
+   857→                      {/* nội dung */}
+   858→                      <div className="mt-1 text-center">
+   859→                        <p className="font-cn text-4xl leading-snug text-[#4f3d4a]">{w.cn}</p>
+   860→                        {showPinyin ? <p className="mt-0.5 text-xs font-bold uppercase tracking-[0.2em] text-[#e88aa6]">{w.pinyin}</p> : null}
+   861→                        <p className="mt-1 text-sm font-bold text-[#6f5a68]">{w.vi}</p>
+   862→                        <div className="mt-2 flex items-center justify-center gap-1.5">
+   863→                          {w.pos ? (
+   864→                            <span className="rounded-full bg-[var(--cream)] px-2.5 py-0.5 text-[10px] font-bold text-[#6f5a68] ring-1 ring-[#ead9cd]">{w.pos}</span>
+   865→                          ) : null}
+   866→                          {st === 'known' ? <span className="rounded-full bg-[var(--pastel-mint)] px-2.5 py-0.5 text-[10px] font-bold text-[#3f6b50]">✓ Đã thuộc</span> : null}
+   867→                          {st === 'unknown' ? <span className="rounded-full bg-[#fbe4e4] px-2.5 py-0.5 text-[10px] font-bold text-[#c25454]">✗ Chưa thuộc</span> : null}
+   868→                        </div>
+   869→                      </div>
+   870→
+   871→                      {/* ví dụ */}
+   872→                      {w.ex ? (
+   873→                        <div className="mt-3 rounded-xl bg-[#f4fbff] p-2.5 ring-1 ring-[#e3eef6]">
+   874→                          <div className="flex items-start justify-between gap-2">
+   875→                            <p className="font-cn text-sm leading-snug text-[#3f5c74]">{w.ex.cn}</p>
+   876→                            <button
+   877→                              type="button"
+   878→                              onClick={() => speak(w.ex!.cn)}
+   879→                              aria-label="Nghe câu ví dụ"
+   880→                              className="shrink-0 text-[#7d9cb2] transition-transform hover:scale-110"
+   881→                            >
+   882→                              <SpeakerIcon className="h-3.5 w-3.5" />
+   883→                            </button>
+   884→                          </div>
+   885→                          {showPinyin ? <p className="text-[11px] font-semibold italic text-[#7d9cb2]">{w.ex.pinyin}</p> : null}
+   886→                          <p className="text-[11px] font-bold text-[#6f5a68]">→ {w.ex.vi}</p>
+   887→                        </div>
+   888→                      ) : null}
+   889→                    </motion.article>
+   890→                  )
+   891→                })}
+   892→              </div>
+   893→            ) : (
+   894→              /* danh sách điểm ngữ pháp của cả cấp */
+   895→              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+   896→                {level.grammar.map((g, i) => (
+   897→                  <a
+   898→                    key={g.n}
+   899→                    href={`#/lesson/${level.slug}/g/${g.n}`}
+   900→                    className={`block rounded-2xl bg-white/85 p-4 ring-1 transition-all hover:-translate-y-0.5 hover:shadow-md ${
+   901→                      g.n === num ? 'ring-2 ring-[var(--pastel-butter)]' : 'ring-[#f0e2d4]'
+   902→                    }`}
+   903→                  >
+   904→                    <div className="flex items-center justify-between">
+   905→                      <span className="font-display text-sm font-bold text-[#c9a2b3]">{i + 1}.</span>
+   906→                      <button
+   907→                        type="button"
+   908→                        onClick={(e) => { e.preventDefault(); speak(g.example.cn) }}
+   909→                        aria-label="Nghe câu ví dụ"
+   910→                        className="grid h-7 w-7 place-items-center rounded-full text-[#c9b8c4] transition-colors hover:bg-[var(--pastel-sky)]/60 hover:text-[#46688f]"
+   911→                      >
+   912→                        <SpeakerIcon className="h-3.5 w-3.5" />
+   913→                      </button>
+   914→                    </div>
+   915→                    <h3 className="mt-1 text-sm font-bold text-[#4f3d4a]">{g.point}</h3>
+   916→                    {g.cn ? <p className="font-cn text-xs text-[#b58fa0]">{g.cn}</p> : null}
+   917→                    <p className="mt-2 inline-block rounded-lg bg-[var(--pastel-butter)]/60 px-2.5 py-1 font-cn text-sm text-[#8a6a1f]">{g.structure}</p>
+   918→                    <div className="mt-3 rounded-xl bg-[#f4fbff] p-3 ring-1 ring-[#e3eef6]">
+   919→                      <p className="font-cn text-lg leading-snug text-[#3f5c74]">{g.example.cn}</p>
+   920→                      {showPinyin ? <p className="text-xs font-semibold italic text-[#7d9cb2]">{g.example.pinyin}</p> : null}
+   921→                      <p className="text-xs font-bold text-[#6f5a68]">→ {g.example.vi}</p>
+   922→                    </div>
+   923→                  </a>
+   924→                ))}
+   925→              </div>
+   926→            )}
+   927→          </section>
+   928→
+   929→          {/* điều hướng dưới trang */}
+   930→          <div className="mt-10 flex items-center justify-center gap-3">
+   931→            <a
+   932→              href={backHref}
+   933→              className="paper-scrap rounded-full px-5 py-2.5 text-xs font-bold text-[#6f5a68] transition-transform hover:-translate-y-0.5"
+   934→            >
+   935→              ← Về danh sách bài
+   936→            </a>
+   937→            <span className="font-cn text-sm text-[#c9a2b3]">{level.cn}</span>
+   938→            <a
+   939→              href="#/create-file"
+   940→              className="paper-scrap rounded-full px-5 py-2.5 text-xs font-bold text-[#6f5a68] transition-transform hover:-translate-y-0.5"
+   941→              title="Tạo vở tập viết cho bài này"
+   942→            >
+   943→              ✎ Tạo vở tập viết →
+   944→            </a>
+   945→          </div>
+   946→        </div>
+   947→      </main>
+   948→
+   949→      <Footer />
+   950→    </div>
+   951→  )
+   952→}
+   953→
