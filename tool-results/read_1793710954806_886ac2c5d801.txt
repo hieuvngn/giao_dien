@@ -1,0 +1,1278 @@
+     1→'use client'
+     2→
+     3→import { Fragment, useMemo, useState } from 'react'
+     4→import { motion } from 'framer-motion'
+     5→import Footer from '../landing/footer'
+     6→import { PushPin, Reveal, SectionHeading, WashiTape } from '../landing/decor'
+     7→import { PARAGRAPH_SAMPLES, VOCAB_PRESETS, charPinyin, wordPinyin } from '@/lib/data'
+     8→import { MEANING_MAP, type DbWord } from '@/lib/vocab-db'
+     9→import { RADICALS, type Radical } from '@/data/radicals'
+    10→import { useToast } from '@/hooks/use-toast'
+    11→import WordPicker from './word-picker'
+    12→import StrokeChar from './stroke-char'
+    13→
+    14→/* ============================================================
+    15→   Tạo vở tập viết chữ Hán — Route: #/create-file
+    16→   6 bố cục: chuẩn từng chữ · bảng thông tin · văn bản liên tục ·
+    17→   bộ thủ · thứ tự nét · ô chữ lớn — + nền pastel + watermark
+    18→   ============================================================ */
+    19→
+    20→type PaperType = 'tian' | 'mi' | 'square' | 'line'
+    21→type PaperBg = 'white' | 'cream' | 'pink' | 'mint' | 'butter'
+    22→type LayoutMode = 'std' | 'info' | 'flow' | 'radical' | 'stroke' | 'bigchar'
+    23→type RadFilter = 'all' | '1-2' | '3-4' | '5-6' | '7+'
+    24→
+    25→const PAPERS: { id: PaperType; label: string; cn: string; desc: string }[] = [
+    26→  { id: 'tian', label: 'Ô chữ giữa', cn: '田字格', desc: 'Ngang dọc giữa ô' },
+    27→  { id: 'mi', label: 'Ô tám hướng', cn: '米字格', desc: 'Kèm đường chéo' },
+    28→  { id: 'square', label: 'Ô vuông', cn: '方格', desc: 'Ô trơn đơn giản' },
+    29→  { id: 'line', label: 'Dòng kẻ', cn: '横线', desc: 'Kẻ dòng ngang' },
+    30→]
+    31→
+    32→/* nền giấy pastel theo style trang — in PDF vẫn giữ màu nhờ .ink-exact */
+    33→const BACKDROPS: { id: PaperBg; label: string; cn: string; bg: string }[] = [
+    34→  { id: 'white', label: 'Trắng tinh', cn: '白', bg: '#ffffff' },
+    35→  { id: 'cream', label: 'Kem vintage', cn: '米', bg: '#fffdf4' },
+    36→  { id: 'pink', label: 'Hồng đào', cn: '粉', bg: '#fff4f7' },
+    37→  { id: 'mint', label: 'Xanh mint', cn: '青', bg: '#f0f8f2' },
+    38→  { id: 'butter', label: 'Vàng bơ', cn: '黄', bg: '#fff8e4' },
+    39→]
+    40→
+    41→const LAYOUTS: { id: LayoutMode; label: string; cn: string; desc: string }[] = [
+    42→  { id: 'std', label: 'Chuẩn từng chữ', cn: '标准', desc: 'Hàng chữ mẫu + hàng trống để chép' },
+    43→  { id: 'info', label: 'Bảng thông tin', cn: '信息表', desc: 'Bảng chữ · pinyin · nghĩa + ô luyện' },
+    44→  { id: 'flow', label: 'Văn bản liên tục', cn: '文章', desc: 'Đoạn văn chảy đều từng ô trên trang' },
+    45→  { id: 'radical', label: 'Bộ thủ', cn: '部首', desc: 'Luyện bộ thủ kèm chữ mẫu chứa nó' },
+    46→  { id: 'stroke', label: 'Thứ tự nét', cn: '笔顺', desc: 'Chữ đỏ chỉ thứ tự nét + hàng chữ mờ để tô' },
+    47→  { id: 'bigchar', label: 'Ô chữ lớn', cn: '大字格', desc: 'Chữ mẫu to · pinyin · nghĩa + hàng ô tô' },
+    48→]
+    49→
+    50→/* tiêu đề đầu trang vở theo bố cục */
+    51→const SHEET_HEAD: Record<LayoutMode, { vi: string; cn: string; color: string }> = {
+    52→  std: { vi: 'Tập viết chữ Hán', cn: '练字本', color: '#e88aa6' },
+    53→  info: { vi: 'Bảng thông tin từ vựng', cn: '信息表', color: '#46688f' },
+    54→  flow: { vi: 'Tập chép văn bản', cn: '课文', color: '#3f6b50' },
+    55→  radical: { vi: 'Luyện viết bộ thủ', cn: '部首练习', color: '#c07a2c' },
+    56→  stroke: { vi: 'Luyện viết theo thứ tự nét', cn: '笔顺练习', color: '#d2495f' },
+    57→  bigchar: { vi: 'Ô chữ lớn', cn: '大字格', color: '#46688f' },
+    58→}
+    59→
+    60→const STROKE_RANGES: { id: RadFilter; label: string; test: (s: number) => boolean }[] = [
+    61→  { id: 'all', label: 'Tất cả', test: () => true },
+    62→  { id: '1-2', label: '1–2 nét', test: (s) => s <= 2 },
+    63→  { id: '3-4', label: '3–4 nét', test: (s) => s >= 3 && s <= 4 },
+    64→  { id: '5-6', label: '5–6 nét', test: (s) => s >= 5 && s <= 6 },
+    65→  { id: '7+', label: '7+ nét', test: (s) => s >= 7 },
+    66→]
+    67→
+    68→const MAX_WORDS = 200
+    69→const PRINT_CAP = 20
+    70→
+    71→type CellItem = { ch: string; py: string; v?: 'model' | 'trace' | 'stroke' }
+    72→type InfoRow = { n: number; cn: string; py: string; vi: string }
+    73→type StrokeBlock = { word: string; py: string; vi: string; rows: (CellItem | null)[][] }
+    74→type BigBand = { ch: string; py: string; vi: string }
+    75→
+    76→const isHan = (c: string) => /\p{Script=Han}/u.test(c)
+    77→const radicalMeaning = (c: string) => RADICALS.find((r) => r.char === c || r.variant === c)?.meaning ?? ''
+    78→const blankRow = (cols: number): (CellItem | null)[] => Array<CellItem | null>(cols).fill(null)
+    79→
+    80→/* ================= dựng trang — bố cục CHUẨN TỪNG CHỮ ================= */
+    81→
+    82→/* Sắp trang kiểu sách tập viết: mỗi từ chiếm `repeat` hàng liên tiếp —
+    83→   hàng đầu là hàng mẫu (từ lặp lại nhiều lần), các hàng sau trống để chép theo.
+    84→   modelCell = false → hàng mẫu cũng trống (vở luyện hoàn toàn) */
+    85→function buildSheets(words: string[], repeat: number, cols: number, rows: number, modelCell: boolean): (CellItem | null)[][][] {
+    86→  const pages: (CellItem | null)[][][] = []
+    87→  let page: (CellItem | null)[][] = []
+    88→  const pushRow = (row: (CellItem | null)[]) => {
+    89→    page.push(row)
+    90→    if (page.length === rows) {
+    91→      pages.push(page)
+    92→      page = []
+    93→    }
+    94→  }
+    95→  words.forEach((w) => {
+    96→    const chars = [...w]
+    97→    const perRow = Math.max(1, Math.floor(cols / chars.length))
+    98→    const sampleRow: (CellItem | null)[] = []
+    99→    if (modelCell) {
+   100→      for (let k = 0; k < perRow; k++) {
+   101→        chars.forEach((ch) => sampleRow.push({ ch, py: charPinyin(ch) }))
+   102→      }
+   103→    }
+   104→    while (sampleRow.length < cols) sampleRow.push(null)
+   105→    pushRow(sampleRow)
+   106→    for (let r = 1; r < repeat; r++) pushRow(blankRow(cols))
+   107→  })
+   108→  if (page.length) pages.push(page)
+   109→  return pages.length ? pages : [blankPage(cols, rows)]
+   110→}
+   111→
+   112→function blankPage(cols: number, rows: number): (CellItem | null)[][] {
+   113→  return Array.from({ length: rows }, () => blankRow(cols))
+   114→}
+   115→
+   116→/* ================= dựng trang — bố cục BỘ THỦ ================= */
+   117→
+   118→/* Mỗi bộ thủ: 1 hàng mẫu (bộ thủ + các chữ chứa nó) + practiceRows hàng trống */
+   119→function buildRadicalSheets(list: Radical[], practiceRows: number, cols: number, rows: number): (CellItem | null)[][][] {
+   120→  const pages: (CellItem | null)[][][] = []
+   121→  let page: (CellItem | null)[][] = []
+   122→  const pushRow = (row: (CellItem | null)[]) => {
+   123→    page.push(row)
+   124→    if (page.length === rows) {
+   125→      pages.push(page)
+   126→      page = []
+   127→    }
+   128→  }
+   129→  list.forEach((r) => {
+   130→    const row: (CellItem | null)[] = [{ ch: r.char, py: r.pinyin }]
+   131→    for (const w of r.words) {
+   132→      if (row.length >= cols) break
+   133→      row.push({ ch: w.c, py: w.p })
+   134→    }
+   135→    while (row.length < cols) row.push(null)
+   136→    pushRow(row)
+   137→    for (let p = 0; p < practiceRows; p++) pushRow(blankRow(cols))
+   138→  })
+   139→  if (page.length) pages.push(page)
+   140→  return pages.length ? pages : [blankPage(cols, rows)]
+   141→}
+   142→
+   143→/* ================= dựng trang — bố cục VĂN BẢN LIÊN TỤC ================= */
+   144→
+   145→/* Mỗi chữ một ô, chảy liền mạch hết hàng này sang hàng khác, hết trang đổi trang */
+   146→function buildFlowPages(text: string, cols: number, rows: number): (CellItem | null)[][][] {
+   147→  const chars = [...text].filter((c) => c.trim() !== '')
+   148→  if (!chars.length) return [blankPage(cols, rows)]
+   149→  const pyCache = new Map<string, string>()
+   150→  const perPage = cols * rows
+   151→  const pages: (CellItem | null)[][][] = []
+   152→  for (let i = 0; i < chars.length; i += perPage) {
+   153→    const slice = chars.slice(i, i + perPage)
+   154→    const page: (CellItem | null)[][] = []
+   155→    for (let r = 0; r < rows; r++) {
+   156→      const rowCells = slice.slice(r * cols, (r + 1) * cols).map((c) => {
+   157→        let py = pyCache.get(c)
+   158→        if (py === undefined) {
+   159→          py = isHan(c) ? charPinyin(c) : ''
+   160→          pyCache.set(c, py)
+   161→        }
+   162→        return { ch: c, py } as CellItem
+   163→      })
+   164→      while (rowCells.length < cols) rowCells.push(null)
+   165→      page.push(rowCells)
+   166→    }
+   167→    pages.push(page)
+   168→  }
+   169→  return pages
+   170→}
+   171→
+   172→/* ================= dựng trang — bố cục THỨ TỰ NÉT ================= */
+   173→
+   174→/* Mỗi từ 1 khối: dòng tiêu đề (từ · pinyin · nghĩa · sơ đồ thứ tự nét)
+   175→   + 1 hàng chữ đỏ lặp đầy hàng + các hàng chữ mờ để tô theo.          */
+   176→function buildStrokePages(words: string[], repeat: number, cols: number, rows: number): StrokeBlock[][] {
+   177→  const blocks: StrokeBlock[] = words.map((w) => {
+   178→    const chars = [...w]
+   179→    const py = wordPinyin(w)
+   180→    const vi = MEANING_MAP.get(w) ?? ''
+   181→    const modelRow: (CellItem | null)[] = []
+   182→    for (let c = 0; c < cols; c++) modelRow.push({ ch: chars[c % chars.length], py: charPinyin(chars[c % chars.length]), v: 'model' })
+   183→    const rowsAll: (CellItem | null)[][] = [modelRow]
+   184→    for (let r = 0; r < Math.max(0, repeat - 1); r++) {
+   185→      const row: (CellItem | null)[] = []
+   186→      for (let c = 0; c < cols; c++) row.push({ ch: chars[c % chars.length], py: '', v: 'trace' })
+   187→      rowsAll.push(row)
+   188→    }
+   189→    return { word: w, py, vi, rows: rowsAll }
+   190→  })
+   191→  const perPage = Math.max(1, Math.floor((rows + 0.55) / (repeat + 0.45)))
+   192→  const pages: StrokeBlock[][] = []
+   193→  for (let i = 0; i < blocks.length; i += perPage) pages.push(blocks.slice(i, i + perPage))
+   194→  return pages.length ? pages : [[]]
+   195→}
+   196→
+   197→/* ================= dựng trang — bố cục Ô CHỮ LỚN ================= */
+   198→
+   199→/* Tách từng ký tự: mỗi chữ 1 dải — chữ mẫu to + pinyin + nghĩa,
+   200→   bên dưới là hàng ô chữ mờ để tô.                              */
+   201→function buildBigPages(words: string[], rows: number): BigBand[][] {
+   202→  const bands: BigBand[] = []
+   203→  const seen = new Set<string>()
+   204→  words.forEach((w) =>
+   205→    [...w].forEach((c) => {
+   206→      if (!isHan(c) || seen.has(c)) return
+   207→      seen.add(c)
+   208→      bands.push({ ch: c, py: charPinyin(c), vi: MEANING_MAP.get(c) ?? radicalMeaning(c) })
+   209→    }),
+   210→  )
+   211→  const perPage = Math.max(1, Math.floor(rows / 2))
+   212→  const pages: BigBand[][] = []
+   213→  for (let i = 0; i < bands.length; i += perPage) pages.push(bands.slice(i, i + perPage))
+   214→  return pages.length ? pages : [[]]
+   215→}
+   216→
+   217→/* ================= dựng trang — bố cục BẢNG THÔNG TIN ================= */
+   218→
+   219→function buildInfoRows(words: string[]): InfoRow[] {
+   220→  return words.map((w, i) => ({ n: i + 1, cn: w, py: wordPinyin(w), vi: MEANING_MAP.get(w) ?? '' }))
+   221→}
+   222→
+   223→function chunkInfoPages(rowsAll: InfoRow[], per: number): (InfoRow | null)[][] {
+   224→  if (!rowsAll.length) return [Array<InfoRow | null>(per).fill(null)]
+   225→  const pages: (InfoRow | null)[][] = []
+   226→  for (let i = 0; i < rowsAll.length; i += per) {
+   227→    const chunk = rowsAll.slice(i, i + per)
+   228→    while (chunk.length < per) chunk.push(null)
+   229→    pages.push(chunk)
+   230→  }
+   231→  return pages
+   232→}
+   233→
+   234→/* ================= trang giấy (dùng chung preview + in) ================= */
+   235→
+   236→function StrokeCell({ it, paper }: { it: CellItem | null; paper: PaperType }) {
+   237→  const cls =
+   238→    paper === 'tian' ? 'han-cell han-tian' : paper === 'mi' ? 'han-cell han-mi' : paper === 'line' ? 'han-cell han-line' : 'han-cell'
+   239→  return (
+   240→    <div className={`${cls} grid min-h-0 place-items-center`} style={{ containerType: 'size' }}>
+   241→      {it && (
+   242→        <div className="flex h-full w-full flex-col items-center justify-center gap-[3cqw]">
+   243→          {it.py && (
+   244→            <span className="font-semibold leading-none text-[#e88aa6]" style={{ fontSize: '12cqw' }}>
+   245→              {it.py}
+   246→            </span>
+   247→          )}
+   248→          {it.v === 'trace' ? (
+   249→            <span className="font-cn leading-none text-[#4f3d4a]" style={{ fontSize: '48cqw', opacity: 0.16 }}>
+   250→              {it.ch}
+   251→            </span>
+   252→          ) : (
+   253→            <span className="font-cn leading-none text-[#d2495f]" style={{ fontSize: '48cqw', opacity: 0.88 }}>
+   254→              {it.ch}
+   255→            </span>
+   256→          )}
+   257→        </div>
+   258→      )}
+   259→    </div>
+   260→  )
+   261→}
+   262→
+   263→function Sheet({
+   264→  layout,
+   265→  paper,
+   266→  bg,
+   267→  cols,
+   268→  rows,
+   269→  gridData,
+   270→  infoRows,
+   271→  practiceCells,
+   272→  showPinyin,
+   273→  fadeModel = false,
+   274→  strokeBlocks = null,
+   275→  bigBands = null,
+   276→  traceCells = 8,
+   277→  wmText = '',
+   278→}: {
+   279→  layout: LayoutMode
+   280→  paper: PaperType
+   281→  bg: string
+   282→  cols: number
+   283→  rows: number
+   284→  gridData: (CellItem | null)[][]
+   285→  infoRows: (InfoRow | null)[] | null
+   286→  practiceCells: number
+   287→  showPinyin: boolean
+   288→  fadeModel?: boolean
+   289→  strokeBlocks?: StrokeBlock[] | null
+   290→  bigBands?: BigBand[] | null
+   291→  traceCells?: number
+   292→  wmText?: string
+   293→}) {
+   294→  const cellCls =
+   295→    paper === 'tian' ? 'han-cell han-tian' : paper === 'mi' ? 'han-cell han-mi' : paper === 'line' ? 'han-cell han-line' : 'han-cell'
+   296→  const head = SHEET_HEAD[layout]
+   297→  const charOpacity = fadeModel ? 0.28 : 1
+   298→
+   299→  return (
+   300→    <div
+   301→      className="ink-exact relative flex h-full w-full flex-col text-[#4f3d4a]"
+   302→      style={{ background: bg, containerType: 'inline-size' }}
+   303→    >
+   304→      {/* watermark in chéo giữa trang (preview + PDF) */}
+   305→      {wmText && (
+   306→        <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-20 grid select-none place-items-center overflow-hidden">
+   307→          <span
+   308→            className="wm-mark font-display font-bold"
+   309→            style={{ fontSize: wmText.length > 14 ? '8cqw' : wmText.length > 8 ? '11cqw' : '15cqw' }}
+   310→          >
+   311→            {wmText}
+   312→          </span>
+   313→        </div>
+   314→      )}
+   315→
+   316→      {/* đầu trang vở */}
+   317→      <div className="flex items-end justify-between gap-3 border-b-2 border-dashed border-[#eac6d2] pb-2">
+   318→        <p className="font-display text-sm font-bold sm:text-base">
+   319→          {head.vi} <span className="font-cn" style={{ color: head.color }}>{head.cn}</span>
+   320→        </p>
+   321→        <p className="text-[10px] font-semibold text-[#8d7484] sm:text-xs">
+   322→          Tên <span className="inline-block w-16 border-b border-[#c9a2b3] sm:w-24" /> · Ngày{' '}
+   323→          <span className="inline-block w-12 border-b border-[#c9a2b3] sm:w-16" />
+   324→        </p>
+   325→      </div>
+   326→
+   327→      {/* lưới ô tập viết — chuẩn · liên tục · bộ thủ */}
+   328→      {infoRows === null && layout !== 'stroke' && layout !== 'bigchar' && (
+   329→        <div
+   330→          className="mt-2 grid flex-1 gap-[3px]"
+   331→          style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, gridTemplateRows: `repeat(${rows}, 1fr)` }}
+   332→        >
+   333→          {Array.from({ length: rows * cols }).map((_, i) => {
+   334→            const ri = Math.floor(i / cols)
+   335→            const ci = i % cols
+   336→            const it = gridData[ri]?.[ci] ?? null
+   337→            return (
+   338→              <div key={i} className={`${cellCls} grid place-items-center`} style={{ containerType: 'size' }}>
+   339→                {it && (
+   340→                  <div className="flex h-full w-full flex-col items-center justify-center">
+   341→                    {showPinyin && it.py && (
+   342→                      <span className="font-semibold leading-none text-[#e88aa6]" style={{ fontSize: '14cqw' }}>
+   343→                        {it.py}
+   344→                      </span>
+   345→                    )}
+   346→                    <span
+   347→                      className="font-cn leading-none text-[#4f3d4a]"
+   348→                      style={{ fontSize: '52cqw', opacity: charOpacity }}
+   349→                    >
+   350→                      {it.ch}
+   351→                    </span>
+   352→                  </div>
+   353→                )}
+   354→              </div>
+   355→            )
+   356→          })}
+   357→        </div>
+   358→      )}
+   359→
+   360→      {/* khối luyện THỨ TỰ NÉT: tiêu đề từ + hàng mẫu đỏ + hàng tô mờ */}
+   361→      {strokeBlocks && strokeBlocks.length > 0 && (
+   362→        <div className="mt-1.5 flex min-h-0 flex-1 flex-col gap-[2cqw]">
+   363→          {strokeBlocks.map((b, bi) => (
+   364→            <div key={bi} className="flex min-h-0 flex-1 flex-col gap-[1.2cqw]">
+   365→              <div className="flex items-center gap-[1.6cqw] border-b border-dashed border-[#eac6d2] pb-[0.5cqw]">
+   366→                <span className="font-cn font-bold leading-none text-[#4f3d4a]" style={{ fontSize: '4.6cqw' }}>
+   367→                  {b.word}
+   368→                </span>
+   369→                <span className="font-semibold leading-none text-[#e88aa6]" style={{ fontSize: '3.3cqw' }}>
+   370→                  {b.py}
+   371→                </span>
+   372→                {b.vi && (
+   373→                  <span className="min-w-0 truncate font-semibold leading-none text-[#8d7484]" style={{ fontSize: '3cqw' }}>
+   374→                    {b.vi}
+   375→                  </span>
+   376→                )}
+   377→                <span className="ml-auto flex shrink-0 items-center gap-[1cqw]">
+   378→                  {[...b.word].slice(0, 4).map((c, ci) => (
+   379→                    <StrokeChar key={`${c}-${ci}`} ch={c} size={7.4} />
+   380→                  ))}
+   381→                </span>
+   382→                <span
+   383→                  className="shrink-0 rounded-full bg-[var(--pastel-pink-soft)] px-[1.8cqw] py-[0.6cqw] font-bold text-[#8a4a63]"
+   384→                  style={{ fontSize: '2.5cqw' }}
+   385→                >
+   386→                  笔顺
+   387→                </span>
+   388→              </div>
+   389→              <div
+   390→                className="grid min-h-0 flex-1 gap-[3px]"
+   391→                style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, gridTemplateRows: `repeat(${b.rows.length}, 1fr)` }}
+   392→              >
+   393→                {b.rows.flat().map((it, i) => (
+   394→                  <StrokeCell key={i} it={it} paper={paper} />
+   395→                ))}
+   396→              </div>
+   397→            </div>
+   398→          ))}
+   399→        </div>
+   400→      )}
+   401→
+   402→      {/* dải Ô CHỮ LỚN: chữ mẫu to + pinyin + nghĩa + hàng ô tô mờ */}
+   403→      {bigBands && bigBands.length > 0 && (
+   404→        <div className="mt-1.5 flex min-h-0 flex-1 flex-col gap-[2.4cqw]">
+   405→          {bigBands.map((b, bi) => (
+   406→            <div key={bi} className="flex min-h-0 flex-1 flex-col gap-[1.2cqw]">
+   407→              <div className="flex min-h-0 items-stretch gap-[2.4cqw]" style={{ flex: 1.25 }}>
+   408→                <div className={`${cellCls} grid shrink-0 place-items-center self-center`} style={{ height: '92%', aspectRatio: '1', containerType: 'size' }}>
+   409→                  <span className="font-cn leading-none text-[#4f3d4a]" style={{ fontSize: '56cqw' }}>
+   410→                    {b.ch}
+   411→                  </span>
+   412→                </div>
+   413→                <div className="flex min-w-0 flex-1 flex-col justify-center gap-[1.2cqw]">
+   414→                  <p className="truncate font-bold leading-none text-[#e88aa6]" style={{ fontSize: '4.4cqw' }}>
+   415→                    {b.py}
+   416→                  </p>
+   417→                  <p className="truncate font-semibold leading-none text-[#6f5a68]" style={{ fontSize: '3.6cqw' }}>
+   418→                    {b.vi || '—'}
+   419→                  </p>
+   420→                  <p className="truncate font-semibold leading-none text-[#b58fa0]" style={{ fontSize: '2.7cqw' }}>
+   421→                    Tô theo chữ mẫu · 描红
+   422→                  </p>
+   423→                </div>
+   424→                <div className="shrink-0 self-center" style={{ height: '78%', aspectRatio: '1', containerType: 'size' }}>
+   425→                  <StrokeChar ch={b.ch} />
+   426→                </div>
+   427→              </div>
+   428→              <div className="grid min-h-0 flex-1 gap-[3px]" style={{ gridTemplateColumns: `repeat(${traceCells}, 1fr)` }}>
+   429→                {Array.from({ length: traceCells }).map((_, ci) => (
+   430→                  <div key={ci} className={`${cellCls} grid min-h-0 place-items-center`} style={{ containerType: 'size' }}>
+   431→                    <span className="font-cn leading-none text-[#4f3d4a]" style={{ fontSize: '52cqw', opacity: 0.15 }}>
+   432→                      {b.ch}
+   433→                    </span>
+   434→                  </div>
+   435→                ))}
+   436→              </div>
+   437→            </div>
+   438→          ))}
+   439→        </div>
+   440→      )}
+   441→
+   442→      {/* bảng thông tin từ vựng */}
+   443→      {infoRows !== null && (
+   444→        <div className="mt-2 flex-1" style={{ containerType: 'inline-size' }}>
+   445→          <div
+   446→            className="grid h-full gap-[3px]"
+   447→            style={{
+   448→              gridTemplateColumns: `1.6rem 1.1fr 1.25fr 1.7fr repeat(${practiceCells}, minmax(0, 0.75fr))`,
+   449→              gridTemplateRows: `repeat(${rows + 1}, 1fr)`,
+   450→            }}
+   451→          >
+   452→            {/* hàng tiêu đề */}
+   453→            {['#', '汉字 · Chữ Hán', 'Pinyin', 'Nghĩa Việt'].map((h) => (
+   454→              <div
+   455→                key={h}
+   456→                className="grid place-items-center rounded-[2.5px] border border-[#ecc2cf] bg-[var(--pastel-pink-soft)] px-0.5 text-center font-bold text-[#8a4a63]"
+   457→                style={{ fontSize: '1.8cqw' }}
+   458→              >
+   459→                {h}
+   460→              </div>
+   461→            ))}
+   462→            <div
+   463→              className="grid place-items-center rounded-[2.5px] border border-[#ecc2cf] bg-[var(--pastel-pink-soft)] px-0.5 text-center font-bold text-[#8a4a63]"
+   464→              style={{ fontSize: '1.8cqw', gridColumn: `span ${practiceCells}` }}
+   465→            >
+   466→              Luyện viết · 写
+   467→            </div>
+   468→
+   469→            {/* các hàng từ */}
+   470→            {infoRows.map((r, ri) => (
+   471→              <Fragment key={ri}>
+   472→                <div
+   473→                  className="grid place-items-center overflow-hidden rounded-[2.5px] border border-[#ecc2cf] bg-white font-bold text-[#b58fa0]"
+   474→                  style={{ fontSize: '1.9cqw' }}
+   475→                >
+   476→                  {r ? r.n : ''}
+   477→                </div>
+   478→                <div
+   479→                  className={`grid place-items-center overflow-hidden rounded-[2.5px] border border-[#ecc2cf] bg-white ${cellCls}`}
+   480→                  style={{ fontSize: '4.6cqw' }}
+   481→                >
+   482→                  <span className="font-cn leading-tight" style={{ opacity: r ? 1 : 0 }}>
+   483→                    {r?.cn ?? '·'}
+   484→                  </span>
+   485→                </div>
+   486→                <div
+   487→                  className="grid place-items-center overflow-hidden rounded-[2.5px] border border-[#ecc2cf] bg-white px-0.5 text-center font-semibold text-[#e88aa6]"
+   488→                  style={{ fontSize: '2.1cqw' }}
+   489→                >
+   490→                  {showPinyin ? r?.py : ''}
+   491→                </div>
+   492→                <div
+   493→                  className="grid place-items-center overflow-hidden rounded-[2.5px] border border-[#ecc2cf] bg-white px-0.5 text-center font-semibold text-[#6f5a68]"
+   494→                  style={{ fontSize: '2cqw' }}
+   495→                >
+   496→                  {r?.vi || ''}
+   497→                </div>
+   498→                {Array.from({ length: practiceCells }).map((_, ci) => (
+   499→                  <div key={ci} className={cellCls} />
+   500→                ))}
+   501→              </Fragment>
+   502→            ))}
+   503→          </div>
+   504→        </div>
+   505→      )}
+   506→    </div>
+   507→  )
+   508→}
+   509→
+   510→/* ================= nhóm chức năng ================= */
+   511→
+   512→function Group({
+   513→  n,
+   514→  title,
+   515→  cn,
+   516→  tape,
+   517→  children,
+   518→}: {
+   519→  n: number
+   520→  title: string
+   521→  cn: string
+   522→  tape: string
+   523→  children: React.ReactNode
+   524→}) {
+   525→  return (
+   526→    <div className="paper-scrap relative rounded-2xl p-4">
+   527→      <WashiTape color={tape} pattern={n % 2 ? 'dots' : 'stripes'} rotate={n % 2 ? -4 : 4} className="-top-2.5 left-5 h-5 w-14" />
+   528→      <h3 className="font-display mb-3 flex items-baseline gap-2 text-sm font-bold text-[#4f3d4a]">
+   529→        <span className="grid h-5 w-5 place-items-center rounded-full bg-[var(--pastel-pink)] text-[11px] text-[#8a4a63]">{n}</span>
+   530→        {title} <span className="font-cn text-xs font-semibold text-[#b58fa0]">{cn}</span>
+   531→      </h3>
+   532→      {children}
+   533→    </div>
+   534→  )
+   535→}
+   536→
+   537→function Stepper({ value, setValue, min, max, label }: { value: number; setValue: (n: number) => void; min: number; max: number; label: string }) {
+   538→  return (
+   539→    <div className="flex items-center justify-between gap-2">
+   540→      <span className="text-xs font-semibold text-[#6f5a68]">{label}</span>
+   541→      <div className="flex items-center gap-1.5">
+   542→        <button
+   543→          onClick={() => setValue(Math.max(min, value - 1))}
+   544→          aria-label={`Giảm ${label}`}
+   545→          className="grid h-7 w-7 place-items-center rounded-full bg-[var(--pastel-peach)] text-sm font-bold text-[#a05c33] transition-transform hover:scale-110"
+   546→        >
+   547→          −
+   548→        </button>
+   549→        <span className="w-7 text-center font-display text-sm font-bold text-[#4f3d4a]">{value}</span>
+   550→        <button
+   551→          onClick={() => setValue(Math.min(max, value + 1))}
+   552→          aria-label={`Tăng ${label}`}
+   553→          className="grid h-7 w-7 place-items-center rounded-full bg-[var(--pastel-peach)] text-sm font-bold text-[#a05c33] transition-transform hover:scale-110"
+   554→        >
+   555→          +
+   556→        </button>
+   557→      </div>
+   558→    </div>
+   559→  )
+   560→}
+   561→
+   562→function Toggle({ on, setOn, label }: { on: boolean; setOn: (b: boolean) => void; label: string }) {
+   563→  return (
+   564→    <button onClick={() => setOn(!on)} aria-pressed={on} className="flex w-full items-center justify-between gap-2 py-1">
+   565→      <span className="text-xs font-semibold text-[#6f5a68]">{label}</span>
+   566→      <span className={`relative h-6 w-11 rounded-full transition-colors duration-200 ${on ? 'bg-[#e8737f]' : 'bg-[#e5d5dc]'}`}>
+   567→        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all duration-200 ${on ? 'left-[22px]' : 'left-0.5'}`} />
+   568→      </span>
+   569→    </button>
+   570→  )
+   571→}
+   572→
+   573→/* mini preview cho các bố cục */
+   574→function LayoutMini({ id }: { id: LayoutMode }) {
+   575→  const cls = 'han-cell grid h-4 w-4 place-items-center font-cn text-[9px] leading-none text-[#4f3d4a]'
+   576→  if (id === 'std')
+   577→    return (
+   578→      <div className="flex gap-0.5">
+   579→        <span className={`${cls} han-tian`}>你</span>
+   580→        <span className={cls} />
+   581→        <span className={cls} />
+   582→      </div>
+   583→    )
+   584→  if (id === 'info')
+   585→    return (
+   586→      <div className="flex h-4 flex-col gap-px">
+   587→        <span className="h-1.5 rounded-[1px] bg-[var(--pastel-pink)]" />
+   588→        <span className="h-1 rounded-[1px] bg-[var(--pastel-sky)]/70" />
+   589→      </div>
+   590→    )
+   591→  if (id === 'flow')
+   592→    return (
+   593→      <div className="flex gap-0.5">
+   594→        <span className={`${cls} han-tian`}>今</span>
+   595→        <span className={`${cls} han-tian`}>天</span>
+   596→        <span className={`${cls} han-tian`}>天</span>
+   597→      </div>
+   598→    )
+   599→  if (id === 'stroke')
+   600→    return (
+   601→      <div className="flex flex-col gap-0.5">
+   602→        <span className={`${cls} !text-[#d2495f]`}>永</span>
+   603→        <span className={`${cls} !text-[#4f3d4a] opacity-30`}>永</span>
+   604→      </div>
+   605→    )
+   606→  if (id === 'bigchar')
+   607→    return (
+   608→      <div className="flex items-center gap-0.5">
+   609→        <span className="han-cell han-tian grid h-5 w-5 place-items-center font-cn text-[10px] leading-none">你</span>
+   610→        <span className={`${cls} opacity-30`}>你</span>
+   611→        <span className={cls} />
+   612→      </div>
+   613→    )
+   614→  return (
+   615→    <div className="flex gap-0.5">
+   616→      <span className={`${cls} han-tian`}>氵</span>
+   617→      <span className={cls}>河</span>
+   618→      <span className={cls} />
+   619→    </div>
+   620→  )
+   621→}
+   622→
+   623→/* ================= trang chính ================= */
+   624→
+   625→export default function CreateFile() {
+   626→  const { toast } = useToast()
+   627→
+   628→  const [layout, setLayout] = useState<LayoutMode>('std')
+   629→  const [paper, setPaper] = useState<PaperType>('tian')
+   630→  const [cols, setCols] = useState(8)
+   631→  const [rows, setRows] = useState(6)
+   632→  const [presetId, setPresetId] = useState(VOCAB_PRESETS[0].id)
+   633→  const [wordsInput, setWordsInput] = useState(VOCAB_PRESETS[0].words.map((w) => w.w).join('\n'))
+   634→  const [paraSampleId, setParaSampleId] = useState(PARAGRAPH_SAMPLES[0].id)
+   635→  const [para, setPara] = useState(PARAGRAPH_SAMPLES[0].text)
+   636→  const [repeat, setRepeat] = useState(3)
+   637→  const [practiceCells, setPracticeCells] = useState(4)
+   638→  const [practiceRows, setPracticeRows] = useState(1)
+   639→  const [radicalStroke, setRadicalStroke] = useState<RadFilter>('all')
+   640→  const [showPinyin, setShowPinyin] = useState(true)
+   641→  const [modelCell, setModelCell] = useState(true)
+   642→  const [fadeModel, setFadeModel] = useState(false)
+   643→  const [bg, setBg] = useState<PaperBg>('white')
+   644→  const [traceCells, setTraceCells] = useState(8)
+   645→  const [wmOn, setWmOn] = useState(true)
+   646→  const [wmText, setWmText] = useState('Nhật ký Hán ngữ')
+   647→  const [pageIdx, setPageIdx] = useState(0)
+   648→
+   649→  /* ---------- dữ liệu nguồn ---------- */
+   650→  const words = useMemo(() => wordsInput.split('\n').map((w) => w.trim()).filter(Boolean), [wordsInput])
+   651→  const totalChars = useMemo(() => words.reduce((s, w) => s + [...w].length, 0), [words])
+   652→  const flowChars = useMemo(() => [...para].filter((c) => c.trim() !== '').length, [para])
+   653→  const radicals = useMemo(() => {
+   654→    const f = STROKE_RANGES.find((r) => r.id === radicalStroke) ?? STROKE_RANGES[0]
+   655→    return RADICALS.filter((r) => f.test(r.strokes))
+   656→  }, [radicalStroke])
+   657→
+   658→  /* ---------- dựng trang theo bố cục ---------- */
+   659→  const sheets = useMemo(() => buildSheets(words, repeat, cols, rows, modelCell), [words, repeat, cols, rows, modelCell])
+   660→  const radicalSheets = useMemo(() => buildRadicalSheets(radicals, practiceRows, cols, rows), [radicals, practiceRows, cols, rows])
+   661→  const flowPages = useMemo(() => buildFlowPages(para, cols, rows), [para, cols, rows])
+   662→  const infoPages = useMemo(() => chunkInfoPages(buildInfoRows(words), Math.max(3, rows)), [words, rows])
+   663→  const strokePages = useMemo(() => buildStrokePages(words, repeat, cols, rows), [words, repeat, cols, rows])
+   664→  const bigPages = useMemo(() => buildBigPages(words, rows), [words, rows])
+   665→  const charCount = useMemo(() => words.reduce((s, w) => s + [...w].filter(isHan).length, 0), [words])
+   666→
+   667→  const gridPages = layout === 'flow' ? flowPages : layout === 'radical' ? radicalSheets : sheets
+   668→  const pages =
+   669→    layout === 'info'
+   670→      ? infoPages.length
+   671→      : layout === 'stroke'
+   672→        ? strokePages.length
+   673→        : layout === 'bigchar'
+   674→          ? bigPages.length
+   675→          : gridPages.length
+   676→  const safePage = Math.min(pageIdx, pages - 1)
+   677→  const bgCss = BACKDROPS.find((b) => b.id === bg)?.bg ?? '#ffffff'
+   678→  const wmMark = wmOn ? wmText.trim() : ''
+   679→
+   680→  /* ---------- hành động ---------- */
+   681→  const pickLayout = (l: LayoutMode) => {
+   682→    setLayout(l)
+   683→    if (l === 'stroke' && repeat < 2) setRepeat(2)
+   684→    setPageIdx(0)
+   685→  }
+   686→
+   687→  const loadPreset = (id: string) => {
+   688→    const p = VOCAB_PRESETS.find((x) => x.id === id)
+   689→    if (!p) return
+   690→    setPresetId(id)
+   691→    setWordsInput(p.words.map((w) => w.w).join('\n'))
+   692→    if (layout === 'flow' || layout === 'radical') pickLayout('std')
+   693→    setPageIdx(0)
+   694→  }
+   695→
+   696→  const loadParaSample = (id: string) => {
+   697→    const s = PARAGRAPH_SAMPLES.find((x) => x.id === id)
+   698→    if (!s) return
+   699→    setParaSampleId(id)
+   700→    setPara(s.text)
+   701→    setPageIdx(0)
+   702→  }
+   703→
+   704→  /* thêm / bớt một từ (khi bấm từ trong kho) */
+   705→  const toggleWord = (cn: string) => {
+   706→    const lines = wordsInput.split('\n').map((t) => t.trim())
+   707→    if (lines.includes(cn)) {
+   708→      setWordsInput(lines.filter((l) => l !== cn).join('\n'))
+   709→      return
+   710→    }
+   711→    const clean = lines.filter(Boolean)
+   712→    if (clean.length >= MAX_WORDS) {
+   713→      toast({ title: 'Danh sách đã đủ 200 từ', description: 'Xoá bớt để thêm từ mới nhé' })
+   714→      return
+   715→    }
+   716→    setWordsInput([...clean, cn].join('\n'))
+   717→    setPresetId('')
+   718→  }
+   719→
+   720→  /* thêm hàng loạt kết quả tìm kiếm */
+   721→  const addMany = (ws: DbWord[]) => {
+   722→    const lines = wordsInput.split('\n').map((t) => t.trim()).filter(Boolean)
+   723→    const have = new Set(lines)
+   724→    const add = ws.map((w) => w.cn).filter((cn) => !have.has(cn))
+   725→    if (!add.length) {
+   726→      toast({ title: '🧺 Tất cả từ khớp đều đã nằm trong danh sách' })
+   727→      return
+   728→    }
+   729→    const room = MAX_WORDS - lines.length
+   730→    if (room <= 0) {
+   731→      toast({ title: 'Danh sách đã đủ 200 từ', description: 'Xoá bớt để thêm từ mới nhé' })
+   732→      return
+   733→    }
+   734→    const added = add.slice(0, room)
+   735→    setWordsInput([...lines, ...added].join('\n'))
+   736→    setPresetId('')
+   737→    toast({ title: `＋ Đã thêm ${added.length} từ vào danh sách` })
+   738→  }
+   739→
+   740→  const resetAll = () => {
+   741→    setLayout('std')
+   742→    setPaper('tian')
+   743→    setCols(8)
+   744→    setRows(6)
+   745→    setRepeat(3)
+   746→    setPracticeCells(4)
+   747→    setPracticeRows(1)
+   748→    setRadicalStroke('all')
+   749→    setShowPinyin(true)
+   750→    setModelCell(true)
+   751→    setFadeModel(false)
+   752→    setBg('white')
+   753→    setTraceCells(8)
+   754→    setWmOn(true)
+   755→    setWmText('Nhật ký Hán ngữ')
+   756→    setParaSampleId(PARAGRAPH_SAMPLES[0].id)
+   757→    setPara(PARAGRAPH_SAMPLES[0].text)
+   758→    setPresetId(VOCAB_PRESETS[0].id)
+   759→    setWordsInput(VOCAB_PRESETS[0].words.map((w) => w.w).join('\n'))
+   760→    setPageIdx(0)
+   761→    toast({ title: '⟲ Đã đặt lại toàn bộ tuỳ chọn' })
+   762→  }
+   763→
+   764→  /* ---------- nhãn số liệu theo bố cục ---------- */
+   765→  const estimate =
+   766→    layout === 'std'
+   767→      ? `${words.length} từ × ${repeat} hàng · khoảng ${pages} trang A4`
+   768→      : layout === 'info'
+   769→        ? `Bảng ${words.length} từ · ${practiceCells} ô luyện mỗi từ · khoảng ${pages} trang`
+   770→        : layout === 'flow'
+   771→          ? `${flowChars} chữ · khoảng ${pages} trang`
+   772→          : layout === 'stroke'
+   773→            ? `${words.length} từ · ${repeat} hàng mỗi từ (1 mẫu + ${Math.max(0, repeat - 1)} tô) · khoảng ${pages} trang`
+   774→            : layout === 'bigchar'
+   775→              ? `${charCount} chữ tách riêng · ${traceCells} ô tô mỗi chữ · khoảng ${pages} trang`
+   776→              : `${radicals.length} bộ thủ · khoảng ${pages} trang`
+   777→
+   778→  /* ---------- các nhóm chức năng (đánh số động) ---------- */
+   779→  const groups: { key: string; title: string; cn: string; tape: string; body: React.ReactNode }[] = []
+   780→
+   781→  groups.push({
+   782→    key: 'layout',
+   783→    title: 'Chế độ bố cục',
+   784→    cn: '布局',
+   785→    tape: 'var(--pastel-lilac)',
+   786→    body: (
+   787→      <div className="grid grid-cols-2 gap-2">
+   788→        {LAYOUTS.map((l) => {
+   789→          const active = layout === l.id
+   790→          return (
+   791→            <button
+   792→              key={l.id}
+   793→              onClick={() => pickLayout(l.id)}
+   794→              aria-pressed={active}
+   795→              className={`flex flex-col gap-1 rounded-xl px-3 py-2.5 text-left transition-all ${
+   796→                active
+   797→                  ? 'bg-[var(--pastel-lilac)]/45 shadow-[0_4px_10px_-6px_rgba(93,74,87,0.4)] ring-2 ring-[#c9b8ec]'
+   798→                  : 'ring-1 ring-[#ead9cd] hover:bg-[var(--cream)]'
+   799→              }`}
+   800→            >
+   801→              <span className="flex items-center justify-between gap-1">
+   802→                <span className="font-cn text-sm font-bold text-[#6d5a94]">{l.cn}</span>
+   803→                <LayoutMini id={l.id} />
+   804→              </span>
+   805→              <span className="text-xs font-extrabold text-[#4f3d4a]">{l.label}</span>
+   806→              <span className="text-[10px] font-semibold leading-snug text-[#8d7484]">{l.desc}</span>
+   807→            </button>
+   808→          )
+   809→        })}
+   810→      </div>
+   811→    ),
+   812→  })
+   813→
+   814→  if (layout !== 'radical') {
+   815→    groups.push({
+   816→      key: 'preset',
+   817→      title: layout === 'flow' ? 'Mẫu đoạn văn' : 'Mẫu từ vựng',
+   818→      cn: layout === 'flow' ? '范文' : '词库',
+   819→      tape: 'var(--pastel-butter)',
+   820→      body: layout === 'flow' ? (
+   821→        <div className="flex flex-wrap gap-2">
+   822→          {PARAGRAPH_SAMPLES.map((s) => (
+   823→            <button
+   824→              key={s.id}
+   825→              onClick={() => loadParaSample(s.id)}
+   826→              aria-pressed={paraSampleId === s.id}
+   827→              className={`rounded-full px-3.5 py-1.5 text-xs font-bold transition-all ${
+   828→                paraSampleId === s.id
+   829→                  ? 'bg-[#c9952c] text-white shadow-[0_3px_0_0_#a87a20]'
+   830→                  : 'ring-1 ring-[#ead9cd] text-[#6f5a68] hover:bg-[var(--cream)]'
+   831→              }`}
+   832→            >
+   833→              ¶ {s.name}
+   834→            </button>
+   835→          ))}
+   836→        </div>
+   837→      ) : (
+   838→        <div className="flex flex-wrap gap-2">
+   839→          {VOCAB_PRESETS.map((p) => (
+   840→            <button
+   841→              key={p.id}
+   842→              onClick={() => loadPreset(p.id)}
+   843→              aria-pressed={presetId === p.id}
+   844→              className={`rounded-full px-3.5 py-1.5 text-xs font-bold transition-all ${
+   845→                presetId === p.id
+   846→                  ? 'bg-[#e8737f] text-white shadow-[0_3px_0_0_#d1708f]'
+   847→                  : 'ring-1 ring-[#ead9cd] text-[#6f5a68] hover:bg-[var(--cream)]'
+   848→              }`}
+   849→            >
+   850→              {p.name}
+   851→            </button>
+   852→          ))}
+   853→        </div>
+   854→      ),
+   855→    })
+   856→  }
+   857→
+   858→  groups.push({
+   859→    key: 'source',
+   860→    title:
+   861→      layout === 'flow' ? 'Đoạn văn & giấy ô' : layout === 'radical' ? 'Chọn bộ thủ' : 'Danh sách từ vựng',
+   862→    cn: layout === 'flow' ? '段落' : layout === 'radical' ? '部首' : '生词表',
+   863→    tape: layout === 'flow' ? 'var(--pastel-mint)' : layout === 'radical' ? 'var(--pastel-peach)' : 'var(--pastel-sky)',
+   864→    body:
+   865→      layout === 'flow' ? (
+   866→        <div>
+   867→          <textarea
+   868→            value={para}
+   869→            onChange={(e) => {
+   870→              setPara(e.target.value)
+   871→              setParaSampleId('')
+   872→            }}
+   873→            rows={4}
+   874→            placeholder="Dán hoặc viết đoạn văn tiếng Trung muốn chép…"
+   875→            className="custom-scroll font-cn w-full resize-none rounded-xl bg-[#fffdf6] p-3 text-sm leading-relaxed text-[#4f3d4a] ring-1 ring-[#ead9cd] focus:outline-none focus:ring-2 focus:ring-[#f0b9c9]"
+   876→            aria-label="Đoạn văn muốn chép"
+   877→          />
+   878→          <p className="mt-2 text-[11px] font-semibold text-[#b58fa0]">
+   879→            → {flowChars} chữ · mỗi trang chứa {cols * rows} chữ · dấu câu cũng chiếm một ô như giấy ô vuông thật
+   880→          </p>
+   881→        </div>
+   882→      ) : layout === 'radical' ? (
+   883→        <div>
+   884→          <div className="flex flex-wrap gap-2">
+   885→            {STROKE_RANGES.map((f) => (
+   886→              <button
+   887→                key={f.id}
+   888→                onClick={() => {
+   889→                  setRadicalStroke(f.id)
+   890→                  setPageIdx(0)
+   891→                }}
+   892→                aria-pressed={radicalStroke === f.id}
+   893→                className={`rounded-full px-3 py-1.5 text-xs font-bold transition-all ${
+   894→                  radicalStroke === f.id
+   895→                    ? 'bg-[#c07a2c] text-white shadow-[0_3px_0_0_#a3652a]'
+   896→                    : 'ring-1 ring-[#ead9cd] text-[#6f5a68] hover:bg-[var(--cream)]'
+   897→                }`}
+   898→              >
+   899→                {f.label}
+   900→              </button>
+   901→            ))}
+   902→          </div>
+   903→          <p className="mt-2 text-[11px] font-semibold text-[#b58fa0]">
+   904→            → Đang luyện {radicals.length}/{RADICALS.length} bộ thủ · mỗi bộ có 1 hàng mẫu kèm chữ chứa bộ đó
+   905→          </p>
+   906→        </div>
+   907→      ) : (
+   908→        <div>
+   909→          <textarea
+   910→            value={wordsInput}
+   911→            onChange={(e) => {
+   912→              setWordsInput(e.target.value)
+   913→              setPresetId('')
+   914→            }}
+   915→            rows={4}
+   916→            placeholder={'Mỗi dòng một từ, ví dụ:\n你好\n谢谢'}
+   917→            className="custom-scroll font-cn w-full resize-none rounded-xl bg-[#fffdf6] p-3 text-sm leading-relaxed text-[#4f3d4a] ring-1 ring-[#ead9cd] focus:outline-none focus:ring-2 focus:ring-[#f0b9c9]"
+   918→            aria-label="Danh sách từ vựng, mỗi dòng một từ"
+   919→          />
+   920→          <div className="mt-2 flex items-center justify-between">
+   921→            <p className="text-[11px] font-bold text-[#b58fa0]">
+   922→              {words.length} từ · {totalChars} chữ
+   923→            </p>
+   924→            <button onClick={() => { setWordsInput(''); setPresetId('') }} className="rounded-full px-3 py-1 text-[11px] font-bold text-[#c2547e] hover:bg-[var(--pastel-pink-soft)]">
+   925→              Xoá hết
+   926→            </button>
+   927→          </div>
+   928→          {/* chips xem nhanh */}
+   929→          {words.length > 0 && (
+   930→            <div className="custom-scroll mt-2 flex max-h-24 flex-wrap gap-1.5 overflow-y-auto">
+   931→              {words.slice(0, 14).map((w, i) => (
+   932→                <span key={i} className="rounded-full bg-[var(--cream)] px-2.5 py-1 text-[11px] font-semibold text-[#6f5a68] ring-1 ring-[#ead9cd]">
+   933→                  <span className="font-cn">{w}</span> <span className="text-[#b58fa0]">{wordPinyin(w)}</span>
+   934→                </span>
+   935→              ))}
+   936→              {words.length > 14 && <span className="self-center text-[11px] font-bold text-[#b58fa0]">+{words.length - 14}…</span>}
+   937→            </div>
+   938→          )}
+   939→          {/* kho từ vựng: tìm & chọn */}
+   940→          <WordPicker selected={words} onToggle={toggleWord} onAddMany={addMany} />
+   941→        </div>
+   942→      ),
+   943→  })
+   944→
+   945→  groups.push({
+   946→    key: 'pages',
+   947→    title: 'Trang & số lần viết',
+   948→    cn: '页',
+   949→    tape: 'var(--pastel-lilac)',
+   950→    body: (
+   951→      <div className="space-y-2.5">
+   952→        {(layout === 'std' || layout === 'stroke') && (
+   953→          <Stepper
+   954→            label={layout === 'stroke' ? 'Số hàng mỗi từ (1 mẫu + tô)' : 'Số lần viết mỗi từ'}
+   955→            value={repeat}
+   956→            setValue={(n) => { setRepeat(n); setPageIdx(0) }}
+   957→            min={layout === 'stroke' ? 2 : 1}
+   958→            max={layout === 'stroke' ? 4 : 6}
+   959→          />
+   960→        )}
+   961→        {layout === 'info' && <Stepper label="Ô luyện viết mỗi từ" value={practiceCells} setValue={(n) => setPracticeCells(n)} min={2} max={8} />}
+   962→        {layout === 'radical' && <Stepper label="Hàng trống mỗi bộ thủ" value={practiceRows} setValue={(n) => setPracticeRows(n)} min={1} max={3} />}
+   963→        {layout === 'flow' && <p className="text-xs font-semibold text-[#6f5a68]">Đoạn văn chảy liên tục — không cần số lần viết.</p>}
+   964→        {layout === 'bigchar' && <p className="text-xs font-semibold text-[#6f5a68]">Mỗi chữ 1 dải: chữ mẫu to + hàng ô tô — không cần số lần viết.</p>}
+   965→        <p className="text-[11px] font-semibold text-[#b58fa0]">
+   966→          → {estimate} · in tối đa {PRINT_CAP} trang mỗi lần
+   967→        </p>
+   968→      </div>
+   969→    ),
+   970→  })
+   971→
+   972→  groups.push({
+   973→    key: 'display',
+   974→    title: 'Hiển thị',
+   975→    cn: '显示',
+   976→    tape: 'var(--pastel-pink)',
+   977→    body: (
+   978→      <div className="space-y-1">
+   979→        <Toggle on={showPinyin} setOn={setShowPinyin} label={layout === 'info' ? 'Cột pinyin' : 'Pinyin trên chữ mẫu'} />
+   980→        {layout === 'std' && <Toggle on={modelCell} setOn={setModelCell} label="Hàng mẫu có chữ" />}
+   981→        {(layout === 'std' || layout === 'flow' || layout === 'radical') && <Toggle on={fadeModel} setOn={setFadeModel} label="Chữ mẫu nhạt để tô theo" />}
+   982→        {layout === 'stroke' && <p className="pt-1 text-[10.5px] font-semibold text-[#b58fa0]">Chữ đỏ có đánh số thứ tự nét — hàng bên dưới là chữ mờ để tô theo.</p>}
+   983→        {layout === 'bigchar' && <p className="pt-1 text-[10.5px] font-semibold text-[#b58fa0]">Bên phải mỗi chữ là sơ đồ thứ tự nét thật (dữ liệu 笔顺 của hơn 9.000 ký tự).</p>}
+   984→        {layout === 'info' && <p className="pt-1 text-[10.5px] font-semibold text-[#b58fa0]">Nghĩa Việt tự điền từ kho từ vựng; chữ ngoài kho sẽ để trống cho bạn tự viết.</p>}
+   985→      </div>
+   986→    ),
+   987→  })
+   988→
+   989→  groups.push({
+   990→    key: 'print',
+   991→    title: 'In file',
+   992→    cn: '打印',
+   993→    tape: 'var(--pastel-mint)',
+   994→    body: (
+   995→      <div className="space-y-2">
+   996→        <motion.button
+   997→          onClick={() => window.print()}
+   998→          whileHover={{ y: -2 }}
+   999→          whileTap={{ scale: 0.98 }}
+  1000→          className="w-full rounded-2xl bg-[#e8737f] px-5 py-3.5 font-display text-base font-bold text-white shadow-[0_5px_0_0_#d1708f]"
+  1001→        >
+  1002→          🖨 In / Lưu PDF
+  1003→        </motion.button>
+  1004→        <p className="text-center text-[11px] font-semibold text-[#b58fa0]">
+  1005→          Trong hộp thoại in, chọn <strong className="text-[#6f5a68]">“Save as PDF”</strong> để tải vở về máy
+  1006→        </p>
+  1007→
+  1008→        {/* watermark bản quyền cho PDF */}
+  1009→        <div className="rounded-xl bg-[var(--cream)] p-2.5 ring-1 ring-[#ead9cd]">
+  1010→          <Toggle on={wmOn} setOn={setWmOn} label="Watermark bản quyền" />
+  1011→          {wmOn && (
+  1012→            <input
+  1013→              type="text"
+  1014→              value={wmText}
+  1015→              maxLength={30}
+  1016→              onChange={(e) => setWmText(e.target.value)}
+  1017→              placeholder="Tên sẽ in chéo giữa trang…"
+  1018→              className="mt-1.5 w-full rounded-lg bg-white px-3 py-2 text-xs font-bold text-[#4f3d4a] ring-1 ring-[#ead9cd] placeholder:text-[#c9a2b3] focus:outline-none focus:ring-2 focus:ring-[#f0b9c9]"
+  1019→              aria-label="Nội dung watermark"
+  1020→            />
+  1021→          )}
+  1022→          <p className="mt-1.5 text-[10.5px] font-semibold leading-snug text-[#b58fa0]">
+  1023→            Watermark in chéo giữa mỗi trang PDF. Khi lưu, nhớ bật <strong className="text-[#6f5a68]">“Background graphics”</strong> để giữ màu nền giấy &amp; watermark.
+  1024→          </p>
+  1025→        </div>
+  1026→
+  1027→        <button
+  1028→          onClick={resetAll}
+  1029→          className="paper-scrap w-full rounded-full px-4 py-2 text-xs font-bold text-[#6f5a68] hover:-translate-y-0.5 transition-transform"
+  1030→        >
+  1031→          ⟲ Đặt lại mặc định
+  1032→        </button>
+  1033→      </div>
+  1034→    ),
+  1035→  })
+  1036→
+  1037→  return (
+  1038→    <>
+  1039→      {/* ================= GIAO DIỆN (ẩn khi in) ================= */}
+  1040→      <div className="screen-root flex min-h-screen flex-col overflow-x-clip bg-[#fff6e9] text-[#5d4a57]">
+  1041→
+  1042→        <main className="relative flex-1 pt-24 sm:pt-28">
+  1043→          <div aria-hidden="true" className="dot-grid absolute inset-0" />
+  1044→
+  1045→          <div className="relative mx-auto max-w-6xl px-4 pb-20 sm:px-6">
+  1046→            <div className="pt-4">
+  1047→              <SectionHeading
+  1048→                tag="Công cụ tạo tài liệu"
+  1049→                tagColor="var(--pastel-peach)"
+  1050→                title="Tạo Vở Tập Viết Chữ Hán"
+  1051→                titleAccent="练字本"
+  1052→                sub="Sáu bố cục · 4 mẫu ô · 5 nền giấy pastel · watermark PDF · kho từ vựng sẵn có — xem trước từng trang rồi in."
+  1053→              />
+  1054→            </div>
+  1055→
+  1056→            <div className="mt-10 grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_400px]">
+  1057→              {/* ================= CỘT TRÁI: PREVIEW ================= */}
+  1058→              <Reveal className="lg:sticky lg:top-24">
+  1059→                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+  1060→                  <h2 className="font-display flex items-center gap-2 text-lg font-bold text-[#4f3d4a]">
+  1061→                    Xem trước <span className="font-cn text-sm text-[#e88aa6]">预览</span>
+  1062→                    <PushPin color="#e8737f" className="translate-y-0.5 scale-75" />
+  1063→                  </h2>
+  1064→                  <div className="flex items-center gap-1.5">
+  1065→                    <span className="rounded-full bg-[var(--pastel-lilac)] px-3 py-1 text-[11px] font-bold text-[#6d5a94]">
+  1066→                      {LAYOUTS.find((l) => l.id === layout)?.label}
+  1067→                    </span>
+  1068→                    <span className="rounded-full bg-[var(--pastel-mint)] px-3 py-1 text-[11px] font-bold text-[#3f6b50]">A4 · khổ dọc</span>
+  1069→                  </div>
+  1070→                </div>
+  1071→
+  1072→                {/* khổng giấy A4 */}
+  1073→                <div className="paper-scrap relative mx-auto w-full max-w-[540px] rotate-[0.6deg] rounded-lg p-3 shadow-[0_18px_40px_-18px_rgba(93,74,87,0.35)] sm:p-4">
+  1074→                  <WashiTape color="var(--pastel-butter)" pattern="grid" rotate={-5} className="-top-2.5 right-10 z-10 h-5 w-16" />
+  1075→                  <div className="aspect-[210/297] w-full rounded-md ring-1 ring-[#ead9cd]">
+  1076→                    <Sheet
+  1077→                      layout={layout}
+  1078→                      paper={paper}
+  1079→                      bg={bgCss}
+  1080→                      cols={cols}
+  1081→                      rows={rows}
+  1082→                      gridData={layout === 'info' || layout === 'stroke' || layout === 'bigchar' ? [] : gridPages[safePage] ?? []}
+  1083→                      infoRows={layout === 'info' ? infoPages[safePage] ?? null : null}
+  1084→                      practiceCells={practiceCells}
+  1085→                      showPinyin={showPinyin}
+  1086→                      fadeModel={fadeModel}
+  1087→                      strokeBlocks={layout === 'stroke' ? strokePages[safePage] ?? null : null}
+  1088→                      bigBands={layout === 'bigchar' ? bigPages[safePage] ?? null : null}
+  1089→                      traceCells={traceCells}
+  1090→                      wmText={wmMark}
+  1091→                    />
+  1092→                  </div>
+  1093→                </div>
+  1094→
+  1095→                {/* chuyển trang */}
+  1096→                <div className="mx-auto mt-4 flex max-w-[540px] items-center justify-center gap-3">
+  1097→                  <button
+  1098→                    onClick={() => setPageIdx(Math.max(0, safePage - 1))}
+  1099→                    disabled={safePage === 0}
+  1100→                    className="paper-scrap rounded-full px-4 py-2 text-sm font-bold text-[#6f5a68] disabled:opacity-40"
+  1101→                    aria-label="Trang trước"
+  1102→                  >
+  1103→                    ‹
+  1104→                  </button>
+  1105→                  <span className="font-display text-sm font-bold text-[#4f3d4a]">
+  1106→                    Trang {safePage + 1} / {pages}
+  1107→                  </span>
+  1108→                  <button
+  1109→                    onClick={() => setPageIdx(Math.min(pages - 1, safePage + 1))}
+  1110→                    disabled={safePage >= pages - 1}
+  1111→                    className="paper-scrap rounded-full px-4 py-2 text-sm font-bold text-[#6f5a68] disabled:opacity-40"
+  1112→                    aria-label="Trang sau"
+  1113→                  >
+  1114→                    ›
+  1115→                  </button>
+  1116→                </div>
+  1117→              </Reveal>
+  1118→
+  1119→              {/* ================= CỘT PHẢI: CHỨC NĂNG ================= */}
+  1120→              <div className="flex flex-col gap-5">
+  1121→                {/* 1 · chọn mẫu giấy */}
+  1122→                <Reveal delay={0.05}>
+  1123→                  <Group n={1} title="Chọn mẫu giấy" cn="纸" tape="var(--pastel-pink)">
+  1124→                    <div className="grid grid-cols-2 gap-2">
+  1125→                      {PAPERS.map((p) => (
+  1126→                        <button
+  1127→                          key={p.id}
+  1128→                          onClick={() => setPaper(p.id)}
+  1129→                          aria-pressed={paper === p.id}
+  1130→                          className={`flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition-all ${
+  1131→                            paper === p.id
+  1132→                              ? 'bg-[var(--pastel-pink-soft)] shadow-[0_4px_10px_-6px_rgba(93,74,87,0.4)] ring-2 ring-[#f0b9c9]'
+  1133→                              : 'ring-1 ring-[#ead9cd] hover:bg-[var(--cream)]'
+  1134→                          }`}
+  1135→                        >
+  1136→                          <span className={`h-8 w-8 shrink-0 bg-white ${p.id === 'tian' ? 'han-cell han-tian' : p.id === 'mi' ? 'han-cell han-mi' : p.id === 'line' ? 'han-cell han-line' : 'han-cell'}`} />
+  1137→                          <span>
+  1138→                            <span className="font-cn block text-sm font-bold text-[#4f3d4a]">{p.cn}</span>
+  1139→                            <span className="block text-[10px] font-semibold text-[#8d7484]">{p.desc}</span>
+  1140→                          </span>
+  1141→                        </button>
+  1142→                      ))}
+  1143→                    </div>
+  1144→                  </Group>
+  1145→                </Reveal>
+  1146→
+  1147→                {/* 2 · nền giấy pastel */}
+  1148→                <Reveal delay={0.06}>
+  1149→                  <Group n={2} title="Nền giấy" cn="纸色" tape="var(--pastel-butter)">
+  1150→                    <div className="flex flex-wrap gap-2">
+  1151→                      {BACKDROPS.map((b) => (
+  1152→                        <button
+  1153→                          key={b.id}
+  1154→                          onClick={() => setBg(b.id)}
+  1155→                          aria-pressed={bg === b.id}
+  1156→                          className={`flex items-center gap-2 rounded-full py-1.5 pl-2 pr-3 transition-all ${
+  1157→                            bg === b.id
+  1158→                              ? 'bg-[var(--pastel-pink-soft)] shadow-[0_3px_8px_-4px_rgba(93,74,87,0.4)] ring-2 ring-[#f0b9c9]'
+  1159→                              : 'ring-1 ring-[#ead9cd] hover:bg-[var(--cream)]'
+  1160→                          }`}
+  1161→                        >
+  1162→                          <span className="h-5 w-5 shrink-0 rounded-full ring-1 ring-[#d8c7bd]" style={{ background: b.bg }} />
+  1163→                          <span className="font-cn text-sm font-bold text-[#4f3d4a]">{b.cn}</span>
+  1164→                          <span className="text-[10px] font-semibold text-[#8d7484]">{b.label}</span>
+  1165→                        </button>
+  1166→                      ))}
+  1167→                    </div>
+  1168→                    <p className="mt-2 text-[11px] font-semibold text-[#b58fa0]">→ 5 nền theo bảng màu của trang — in PDF vẫn giữ màu khi bật “Background graphics”.</p>
+  1169→                  </Group>
+  1170→                </Reveal>
+  1171→
+  1172→                {/* 3 · lưới ô */}
+  1173→                <Reveal delay={0.09}>
+  1174→                  <Group n={3} title="Lưới ô" cn="格" tape="var(--pastel-peach)">
+  1175→                    <div className="space-y-2.5">
+  1176→                      <Stepper label="Số ô mỗi hàng (cột)" value={cols} setValue={setCols} min={4} max={12} />
+  1177→                      <Stepper label="Số hàng mỗi trang" value={rows} setValue={(n) => { setRows(n); setPageIdx(0) }} min={3} max={10} />
+  1178→                      {layout === 'bigchar' && <Stepper label="Ô tô theo mỗi chữ" value={traceCells} setValue={(n) => setTraceCells(n)} min={4} max={12} />}
+  1179→                      <p className="text-[11px] font-semibold text-[#b58fa0]">→ Mỗi trang có {cols * rows} ô tập viết</p>
+  1180→                    </div>
+  1181→                  </Group>
+  1182→                </Reveal>
+  1183→
+  1184→                {/* 4+ · các nhóm động */}
+  1185→                {groups.map((g, i) => (
+  1186→                  <Reveal key={g.key} delay={0.12 + i * 0.03}>
+  1187→                    <Group n={i + 4} title={g.title} cn={g.cn} tape={g.tape}>
+  1188→                      {g.body}
+  1189→                    </Group>
+  1190→                  </Reveal>
+  1191→                ))}
+  1192→              </div>
+  1193→            </div>
+  1194→          </div>
+  1195→        </main>
+  1196→
+  1197→        <Footer />
+  1198→      </div>
+  1199→
+  1200→      {/* ================= BẢN IN (chỉ hiện khi in) ================= */}
+  1201→      <div className="print-only" aria-hidden="true">
+  1202→        {layout === 'info'
+  1203→          ? infoPages.slice(0, PRINT_CAP).map((rowsData, p) => (
+  1204→              <div key={p} className="print-page ink-exact" style={{ background: bgCss }}>
+  1205→                <Sheet
+  1206→                  layout="info"
+  1207→                  paper={paper}
+  1208→                  bg={bgCss}
+  1209→                  cols={cols}
+  1210→                  rows={rows}
+  1211→                  gridData={[]}
+  1212→                  infoRows={rowsData}
+  1213→                  practiceCells={practiceCells}
+  1214→                  showPinyin={showPinyin}
+  1215→                  wmText={wmMark}
+  1216→                />
+  1217→              </div>
+  1218→            ))
+  1219→          : layout === 'stroke'
+  1220→            ? strokePages.slice(0, PRINT_CAP).map((blocks, p) => (
+  1221→                <div key={p} className="print-page ink-exact" style={{ background: bgCss }}>
+  1222→                  <Sheet
+  1223→                    layout="stroke"
+  1224→                    paper={paper}
+  1225→                    bg={bgCss}
+  1226→                    cols={cols}
+  1227→                    rows={rows}
+  1228→                    gridData={[]}
+  1229→                    infoRows={null}
+  1230→                    practiceCells={practiceCells}
+  1231→                    showPinyin={showPinyin}
+  1232→                    strokeBlocks={blocks}
+  1233→                    traceCells={traceCells}
+  1234→                    wmText={wmMark}
+  1235→                  />
+  1236→                </div>
+  1237→              ))
+  1238→            : layout === 'bigchar'
+  1239→              ? bigPages.slice(0, PRINT_CAP).map((bands, p) => (
+  1240→                  <div key={p} className="print-page ink-exact" style={{ background: bgCss }}>
+  1241→                    <Sheet
+  1242→                      layout="bigchar"
+  1243→                      paper={paper}
+  1244→                      bg={bgCss}
+  1245→                      cols={cols}
+  1246→                      rows={rows}
+  1247→                      gridData={[]}
+  1248→                      infoRows={null}
+  1249→                      practiceCells={practiceCells}
+  1250→                      showPinyin={showPinyin}
+  1251→                      bigBands={bands}
+  1252→                      traceCells={traceCells}
+  1253→                      wmText={wmMark}
+  1254→                    />
+  1255→                  </div>
+  1256→                ))
+  1257→              : gridPages.slice(0, PRINT_CAP).map((rd, p) => (
+  1258→                  <div key={p} className="print-page ink-exact" style={{ background: bgCss }}>
+  1259→                    <Sheet
+  1260→                      layout={layout}
+  1261→                      paper={paper}
+  1262→                      bg={bgCss}
+  1263→                      cols={cols}
+  1264→                      rows={rows}
+  1265→                      gridData={rd}
+  1266→                      infoRows={null}
+  1267→                      practiceCells={practiceCells}
+  1268→                      showPinyin={showPinyin}
+  1269→                      fadeModel={fadeModel}
+  1270→                      wmText={wmMark}
+  1271→                    />
+  1272→                  </div>
+  1273→                ))}
+  1274→      </div>
+  1275→    </>
+  1276→  )
+  1277→}
+  1278→

@@ -72,8 +72,8 @@ export default function Home() {
     content = <VideoDetail key={route} id={route.split('/')[2]} />
   } else if (route === '/shadowing') {
     content = <ShadowingList />
-  } else if (route === '/create-file') {
-    content = <CreateFile />
+  } else if (route.startsWith('/create-file')) {
+    content = <CreateFile key={route} />
   } else if (route === '/review') {
     content = <ReviewStats />
   } else if (route === '/leaderboard') {
