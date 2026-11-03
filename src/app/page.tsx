@@ -11,6 +11,7 @@ import LessonStudy from '@/components/study/lesson-study'
 import ReviewStats from '@/components/review/review-stats'
 import Leaderboard from '@/components/leaderboard/leaderboard'
 import Dictionary from '@/components/dictionary/dictionary'
+import VideoLearning from '@/components/video/video-learning'
 import ExamHub from '@/components/exam/exam-hub'
 import Practice from '@/components/exam/practice'
 import MockExam from '@/components/exam/mock-exam'
@@ -80,6 +81,8 @@ export default function Home() {
     content = <Leaderboard />
   } else if (route === '/dictionary') {
     content = <Dictionary />
+  } else if (route === '/video') {
+    content = <VideoLearning />
   } else if (route.startsWith('/exam/practice')) {
     content = <Practice key={route} paperId={route.split('/')[3]} />
   } else if (route.startsWith('/exam/mock')) {

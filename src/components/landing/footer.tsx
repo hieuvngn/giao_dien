@@ -26,6 +26,7 @@ export default function Footer() {
           <a href="#/dictionary" className="hover:text-[#e8737f]">Từ điển</a>
           <a href="#/radicals" className="hover:text-[#e8737f]">Bộ thủ</a>
           <a href="#/shadowing" className="hover:text-[#e8737f]">Shadowing</a>
+          <a href="#/video" className="hover:text-[#e8737f]">AI Video</a>
           <a href="#/create-file" className="hover:text-[#e8737f]">Tạo vở tập viết</a>
           <a href="#/login" className="hover:text-[#e8737f]">Đăng nhập</a>
         </nav>
