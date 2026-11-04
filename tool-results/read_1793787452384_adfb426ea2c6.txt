@@ -1,0 +1,827 @@
+     1→'use client'
+     2→
+     3→import { useEffect, useState } from 'react'
+     4→import { AnimatePresence, motion } from 'framer-motion'
+     5→import Footer from '../landing/footer'
+     6→import { PandaSticker, PushPin, Reveal, StarDoodle, WashiTape } from '../landing/decor'
+     7→import { useToast } from '@/hooks/use-toast'
+     8→import {
+     9→  EXAMPLE_SENTENCES,
+    10→  ERROR_PATTERNS,
+    11→  TYPE_META,
+    12→  type MistakeType,
+    13→} from './mistake-data'
+    14→import {
+    15→  analyzeSentence,
+    16→  buildConclusion,
+    17→  buildSeedRecords,
+    18→  fmtDate,
+    19→  genId,
+    20→  knowledgeColor,
+    21→  loadMistakes,
+    22→  normSearch,
+    23→  saveMistakes,
+    24→  type AnalysisResult,
+    25→  type MistakeIssue,
+    26→  type MistakeRecord,
+    27→} from './mistake-engine'
+    28→
+    29→/* ============================================================
+    30→   AI Mistake Analyzer — Phân tích lỗi sai cá nhân (错题本)
+    31→   Route: #/mistakes
+    32→   ------------------------------------------------------------
+    33→   3 tab: 🔍 Phân tích câu → 📕 Sổ lỗi sai → 📊 Quy luật của bạn
+    34→   AI không chỉ chấm đúng/sai: phân loại lỗi (ngữ pháp / trợ từ /
+    35→   lượng từ / trật tự từ), lưu lịch sử rồi kết luận quy luật sai
+    36→   của người học (ví dụ: 7/14 lỗi liên quan đến 了).
+    37→   Dữ liệu lưu tại localStorage — frontend demo.
+    38→   ============================================================ */
+    39→
+    40→type TabId = 'analyze' | 'book' | 'report'
+    41→
+    42→const TABS: { id: TabId; emoji: string; label: string; cn: string }[] = [
+    43→  { id: 'analyze', emoji: '🔍', label: 'Phân tích câu', cn: '分析' },
+    44→  { id: 'book', emoji: '📕', label: 'Sổ lỗi sai', cn: '错题本' },
+    45→  { id: 'report', emoji: '📊', label: 'Quy luật của bạn', cn: '规律' },
+    46→]
+    47→
+    48→/* ---------- hàng nội dung dạng nhãn ---------- */
+    49→
+    50→function Row({ label, icon, children }: { label: string; icon: string; children: React.ReactNode }) {
+    51→  return (
+    52→    <div className="flex gap-3 border-b border-dashed border-[#ead9cd] px-1 py-3 last:border-b-0">
+    53→      <span className="w-24 shrink-0 pt-0.5 text-[10px] font-extrabold uppercase tracking-wider text-[#b58fa0]">
+    54→        {icon} {label}
+    55→      </span>
+    56→      <div className="min-w-0 flex-1">{children}</div>
+    57→    </div>
+    58→  )
+    59→}
+    60→
+    61→function TypeBadge({ type }: { type: MistakeType }) {
+    62→  const meta = TYPE_META[type]
+    63→  return (
+    64→    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-extrabold ring-1 ${meta.cls}`}>
+    65→      {meta.emoji} {meta.label}
+    66→    </span>
+    67→  )
+    68→}
+    69→
+    70→function KnowledgeChip({ k, onGo }: { k: string; onGo: (k: string) => void }) {
+    71→  return (
+    72→    <button
+    73→      type="button"
+    74→      onClick={() => onGo(k)}
+    75→      className="inline-flex items-center gap-1.5 rounded-full bg-[var(--cream)] px-2.5 py-1 text-[10px] font-bold text-[#6f5a68] ring-1 ring-[#ead9cd] transition-all hover:-translate-y-0.5 hover:bg-[var(--pastel-butter)]/50"
+    76→    >
+    77→      <span className="h-2 w-2 rounded-full" style={{ background: knowledgeColor(k) }} aria-hidden="true" />
+    78→      {k}
+    79→    </button>
+    80→  )
+    81→}
+    82→
+    83→/* ---------- thẻ một lỗi trong kết quả phân tích ---------- */
+    84→
+    85→function IssueCard({ issue, index }: { issue: MistakeIssue; index: number }) {
+    86→  const { toast } = useToast()
+    87→  return (
+    88→    <motion.div
+    89→      initial={{ opacity: 0, y: 14 }}
+    90→      animate={{ opacity: 1, y: 0 }}
+    91→      transition={{ duration: 0.35, delay: 0.08 * index, ease: [0.22, 1, 0.36, 1] }}
+    92→      className="paper-scrap rounded-3xl p-4 sm:p-5"
+    93→    >
+    94→      <div className="flex flex-wrap items-center gap-2">
+    95→        <span className="rounded-full bg-[#4f3d4a] px-2.5 py-1 text-[10px] font-extrabold text-white">Lỗi {index + 1}</span>
+    96→        <TypeBadge type={issue.type} />
+    97→        <span className="rounded-full bg-[var(--pastel-peach)] px-2.5 py-1 text-[10px] font-extrabold text-[#a05a3a] ring-1 ring-[#f3dcc6]">
+    98→          Chủ đề: {issue.topic}
+    99→        </span>
+   100→        <span className="ml-auto rounded-full bg-[var(--cream)] px-2.5 py-1 text-[10px] font-extrabold text-[#8d7484] ring-1 ring-[#ead9cd]">
+   101→          {issue.level}
+   102→        </span>
+   103→      </div>
+   104→
+   105→      <div className="mt-1.5">
+   106→        <Row label="Vấn đề" icon="⚠️">
+   107→          <p className="text-xs font-bold leading-relaxed text-[#c2547e]">{issue.issue}</p>
+   108→        </Row>
+   109→
+   110→        <Row label="Bạn đã viết" icon="✍️">
+   111→          <p className="font-cn text-lg leading-snug text-[#4f3d4a]">{issue.raw}</p>
+   112→          {issue.spot && (
+   113→            <p className="mt-1.5 inline-flex flex-wrap items-center gap-1.5 rounded-xl bg-[var(--pastel-pink)]/40 px-2.5 py-1 ring-1 ring-[#f3c4d3]">
+   114→              <span className="font-cn text-sm font-bold text-[#c2547e] line-through decoration-[#c2547e]/60">{issue.spot.a || '∅'}</span>
+   115→              <span className="text-[10px] font-extrabold text-[#8d7484]" aria-hidden="true">→</span>
+   116→              <span className="font-cn text-sm font-bold text-[#3f6b50]">{issue.spot.b || '(bỏ)'}</span>
+   117→            </p>
+   118→          )}
+   119→        </Row>
+   120→
+   121→        <Row label="Câu sửa · AI đề xuất" icon="✨">
+   122→          <p className="font-cn text-lg leading-snug text-[#3f6b50]">{issue.corrected}</p>
+   123→          {issue.gloss && <p className="mt-0.5 text-[11px] font-semibold italic text-[#7fae8f]">{issue.gloss.pinyin}</p>}
+   124→          {issue.gloss?.vi && <p className="mt-0.5 text-[11px] font-bold text-[#8d7484]">→ {issue.gloss.vi}</p>}
+   125→        </Row>
+   126→
+   127→        <Row label="Giải thích" icon="📖">
+   128→          <p className="text-xs font-semibold leading-relaxed text-[#5d4a57]">{issue.explain}</p>
+   129→        </Row>
+   130→
+   131→        <Row label="Kiến thức liên quan" icon="🏷️">
+   132→          <div className="flex flex-wrap gap-1.5">
+   133→            {issue.knowledge.map((k) => (
+   134→              <KnowledgeChip
+   135→                key={k}
+   136→                k={k}
+   137→                onGo={(key) =>
+   138→                  toast({ title: `🔗 Bài học về ${key}`, description: 'Liên kết tới bài giảng chi tiết sắp ra mắt (demo).' })
+   139→                }
+   140→              />
+   141→            ))}
+   142→          </div>
+   143→        </Row>
+   144→      </div>
+   145→    </motion.div>
+   146→  )
+   147→}
+   148→
+   149→/* ---------- thẻ một lỗi trong sổ lỗi sai ---------- */
+   150→
+   151→function RecordCard({
+   152→  record,
+   153→  confirmDel,
+   154→  askDelete,
+   155→  cancelDelete,
+   156→  doDelete,
+   157→  toggleResolved,
+   158→  onGo,
+   159→}: {
+   160→  record: MistakeRecord
+   161→  confirmDel: boolean
+   162→  askDelete: () => void
+   163→  cancelDelete: () => void
+   164→  doDelete: () => void
+   165→  toggleResolved: () => void
+   166→  onGo: (k: string) => void
+   167→}) {
+   168→  return (
+   169→    <li className={`paper-scrap rounded-2xl p-3.5 transition-opacity ${record.resolved ? 'opacity-65' : ''}`}>
+   170→      <div className="flex flex-wrap items-center gap-2">
+   171→        <span className="rounded-full bg-[var(--cream)] px-2 py-0.5 text-[10px] font-extrabold text-[#8d7484] ring-1 ring-[#ead9cd]">
+   172→          {fmtDate(record.createdAt)}
+   173→        </span>
+   174→        <TypeBadge type={record.type} />
+   175→        <span className="text-[10px] font-bold text-[#b58fa0]">{record.topic}</span>
+   176→        <span className="rounded-full bg-[var(--cream)] px-2 py-0.5 text-[10px] font-extrabold text-[#8d7484] ring-1 ring-[#ead9cd]">
+   177→          {record.level}
+   178→        </span>
+   179→        <span className="text-[10px] font-bold text-[#b58fa0]">{record.source === 'ai' ? '🤖 AI chấm' : '📌 demo'}</span>
+   180→        {record.resolved && (
+   181→          <span className="rounded-full bg-[var(--pastel-mint)] px-2.5 py-1 text-[10px] font-extrabold text-[#3f6b50] ring-1 ring-[#cfe6d6]">
+   182→            ✅ Đã khắc phục
+   183→          </span>
+   184→        )}
+   185→      </div>
+   186→
+   187→      <div className="mt-2.5 flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+   188→        <span className={`font-cn text-base leading-snug ${record.resolved ? 'text-[#b58fa0] line-through decoration-[#e88aa6]/60' : 'text-[#4f3d4a]'}`}>
+   189→          {record.raw}
+   190→        </span>
+   191→        <span className="hidden text-[#b58fa0] sm:inline" aria-hidden="true">→</span>
+   192→        <span className="font-cn text-base leading-snug text-[#3f6b50]">{record.corrected}</span>
+   193→      </div>
+   194→      <p className="mt-1 text-[11px] font-semibold leading-relaxed text-[#8d7484]">⚠️ {record.issue}</p>
+   195→
+   196→      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+   197→        {record.knowledge.map((k) => (
+   198→          <KnowledgeChip key={k} k={k} onGo={onGo} />
+   199→        ))}
+   200→        <span className="ml-auto flex items-center gap-1.5">
+   201→          <button
+   202→            type="button"
+   203→            onClick={toggleResolved}
+   204→            className="rounded-xl bg-white/70 px-3 py-1.5 text-[10px] font-extrabold text-[#6f5a68] ring-1 ring-[#ead9cd] transition-all hover:-translate-y-0.5 hover:bg-[var(--pastel-mint)]/40 hover:text-[#3f6b50]"
+   205→          >
+   206→            {record.resolved ? '↩️ Chưa xong' : '✅ Đã khắc phục'}
+   207→          </button>
+   208→          {confirmDel ? (
+   209→            <span className="flex items-center gap-1">
+   210→              <button
+   211→                type="button"
+   212→                onClick={doDelete}
+   213→                aria-label="Xác nhận xoá"
+   214→                title="Xác nhận xoá"
+   215→                className="grid h-7 w-7 place-items-center rounded-lg bg-[#d2495f] text-xs font-extrabold text-white"
+   216→              >
+   217→                ✓
+   218→              </button>
+   219→              <button
+   220→                type="button"
+   221→                onClick={cancelDelete}
+   222→                aria-label="Bỏ xoá"
+   223→                title="Bỏ xoá"
+   224→                className="grid h-7 w-7 place-items-center rounded-lg bg-white/70 text-xs font-extrabold text-[#8d7484] ring-1 ring-[#ead9cd]"
+   225→              >
+   226→                ✕
+   227→              </button>
+   228→            </span>
+   229→          ) : (
+   230→            <button
+   231→              type="button"
+   232→              onClick={askDelete}
+   233→              aria-label="Xoá lỗi này"
+   234→              title="Xoá lỗi này"
+   235→              className="grid h-7 w-7 place-items-center rounded-lg bg-white/70 text-[11px] text-[#8d7484] ring-1 ring-[#ead9cd] transition-all hover:-translate-y-0.5 hover:text-[#d2495f]"
+   236→            >
+   237→              🗑
+   238→            </button>
+   239→          )}
+   240→        </span>
+   241→      </div>
+   242→    </li>
+   243→  )
+   244→}
+   245→
+   246→/* ================= trang chính ================= */
+   247→
+   248→export default function MistakeHub() {
+   249→  const { toast } = useToast()
+   250→  const [tab, setTab] = useState<TabId>('analyze')
+   251→  const [records, setRecords] = useState<MistakeRecord[]>([])
+   252→  const [input, setInput] = useState('')
+   253→  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null)
+   254→  const [thinking, setThinking] = useState(false)
+   255→  const [filter, setFilter] = useState<MistakeType | 'all'>('all')
+   256→  const [q, setQ] = useState('')
+   257→  const [confirmDelId, setConfirmDelId] = useState<string | null>(null)
+   258→  const [confirmReset, setConfirmReset] = useState(false)
+   259→
+   260→  useEffect(() => {
+   261→    // eslint-disable-next-line react-hooks/set-state-in-effect
+   262→    setRecords(loadMistakes())
+   263→  }, [])
+   264→
+   265→  const persist = (next: MistakeRecord[]) => {
+   266→    setRecords(next)
+   267→    saveMistakes(next)
+   268→  }
+   269→
+   270→  const runAnalyze = (text: string) => {
+   271→    const t = text.trim()
+   272→    if (!t) {
+   273→      toast({ title: '✍️ Chưa có câu nào', description: 'Nhập một câu tiếng Trung, ví dụ: 我昨天去学校了没有。' })
+   274→      return
+   275→    }
+   276→    if (!/[\u4e00-\u9fff]/.test(t)) {
+   277→      toast({ title: '🀄 Câu chưa có chữ Hán', description: 'Hãy viết bằng tiếng Trung để AI đối chiếu quy luật lỗi.' })
+   278→      return
+   279→    }
+   280→    setInput(t)
+   281→    setAnalysis(null)
+   282→    setThinking(true)
+   283→    window.setTimeout(() => {
+   284→      setAnalysis(analyzeSentence(t))
+   285→      setThinking(false)
+   286→    }, 650)
+   287→  }
+   288→
+   289→  const saveIssues = () => {
+   290→    if (!analysis || analysis.issues.length === 0) return
+   291→    const now = Date.now()
+   292→    const recs: MistakeRecord[] = analysis.issues.map((it, i) => ({
+   293→      id: `${genId()}-${i}`,
+   294→      raw: it.raw,
+   295→      corrected: it.corrected,
+   296→      type: it.type,
+   297→      topic: it.topic,
+   298→      issue: it.issue,
+   299→      explain: it.explain,
+   300→      knowledge: it.knowledge,
+   301→      level: it.level,
+   302→      createdAt: now,
+   303→      resolved: false,
+   304→      source: 'ai',
+   305→    }))
+   306→    persist([...recs, ...records])
+   307→    toast({ title: `💾 Đã lưu ${recs.length} lỗi vào 错题本`, description: 'Tab "Quy luật của bạn" sẽ cập nhật ngay.' })
+   308→    setAnalysis(null)
+   309→    setInput('')
+   310→  }
+   311→
+   312→  const toggleResolved = (id: string) => {
+   313→    const next = records.map((r) => (r.id === id ? { ...r, resolved: !r.resolved } : r))
+   314→    persist(next)
+   315→    const rec = next.find((r) => r.id === id)
+   316→    if (rec?.resolved) toast({ title: '🎉 Giỏi lắm! Một lỗi đã được khắc phục', description: 'Lỗi này sẽ không còn tính vào quy luật.' })
+   317→  }
+   318→
+   319→  const removeRecord = (id: string) => {
+   320→    persist(records.filter((r) => r.id !== id))
+   321→    setConfirmDelId(null)
+   322→    toast({ title: '🗑 Đã xoá lỗi khỏi sổ' })
+   323→  }
+   324→
+   325→  const resetDemo = () => {
+   326→    persist(buildSeedRecords())
+   327→    setConfirmReset(false)
+   328→    toast({ title: '🔄 Đã nạp lại dữ liệu demo', description: '14 lỗi mẫu: 7 lỗi 了 · 4 lỗi lượng từ · 3 lỗi trật tự.' })
+   329→  }
+   330→
+   331→  const conclusion = buildConclusion(records)
+   332→  const openCount = conclusion.open
+   333→  const patternTopics = [...new Set(ERROR_PATTERNS.map((p) => p.topic))]
+   334→
+   335→  const filtered = records
+   336→    .filter((r) => (filter === 'all' ? true : r.type === filter))
+   337→    .filter((r) => {
+   338→      const needle = normSearch(q.trim())
+   339→      if (!needle) return true
+   340→      return normSearch(`${r.raw} ${r.corrected} ${r.topic} ${r.knowledge.join(' ')} ${r.issue}`).includes(needle)
+   341→    })
+   342→    .sort((a, b) => b.createdAt - a.createdAt)
+   343→  const shown = filtered.slice(0, 30)
+   344→
+   345→  return (
+   346→    <div className="flex min-h-screen flex-col bg-[#fff6e9] text-[#5d4a57]">
+   347→      <main className="relative flex-1 pb-16 pt-20 sm:pt-24">
+   348→        <div aria-hidden="true" className="dot-grid absolute inset-0" />
+   349→
+   350→        <div className="relative mx-auto max-w-5xl px-4 sm:px-6">
+   351→          {/* ================= header ================= */}
+   352→          <Reveal>
+   353→            <header className="paper-scrap relative rounded-3xl px-5 py-6 sm:px-8 sm:py-7">
+   354→              <WashiTape color="var(--pastel-lilac)" pattern="dots" rotate={-5} className="-top-3 left-10 h-6 w-20" />
+   355→              <PushPin color="#9a86c9" className="absolute right-8 top-3 scale-75" />
+   356→
+   357→              <div className="flex items-start justify-between gap-4">
+   358→                <div>
+   359→                  <h1 className="leading-tight">
+   360→                    <span className="relative inline-block px-3 py-0.5">
+   361→                      <span aria-hidden="true" className="absolute inset-0 -rotate-1 rounded-md bg-[var(--pastel-lilac)] opacity-80" />
+   362→                      <span className="relative font-display text-2xl font-bold text-[#4f3d4a] sm:text-3xl">Phân tích lỗi sai cá nhân</span>
+   363→                      <span className="relative ml-2 hidden font-cn text-2xl text-[#6d5a94] sm:inline" aria-hidden="true">
+   364→                        错题本
+   365→                      </span>
+   366→                    </span>
+   367→                  </h1>
+   368→                  <p className="mt-2 max-w-xl text-sm font-semibold leading-relaxed text-[#8d7484]">
+   369→                    Không chỉ báo đúng/sai — AI <b className="text-[#6d5a94]">phân loại lỗi</b> (ngữ pháp, trợ từ, lượng từ, trật tự từ),
+   370→                    <b className="text-[#6d5a94]"> lưu lại lịch sử</b> rồi tìm ra <b className="text-[#6d5a94]">quy luật sai</b> của bạn qua nhiều bài.
+   371→                  </p>
+   372→                </div>
+   373→                <span aria-hidden="true" className="hidden shrink-0 text-5xl sm:block">🧠</span>
+   374→              </div>
+   375→
+   376→              <div className="absolute -bottom-5 right-6 hidden sm:block">
+   377→                <PandaSticker className="h-16 w-16" />
+   378→              </div>
+   379→            </header>
+   380→          </Reveal>
+   381→
+   382→          {/* ================= tabs ================= */}
+   383→          <Reveal delay={0.05}>
+   384→            <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+   385→              <div className="flex gap-1.5 overflow-x-auto rounded-2xl bg-white/60 p-1.5 ring-1 ring-[#ead9cd]" role="tablist" aria-label="Khu vực sổ lỗi sai">
+   386→                {TABS.map((t) => (
+   387→                  <button
+   388→                    key={t.id}
+   389→                    type="button"
+   390→                    role="tab"
+   391→                    aria-selected={tab === t.id}
+   392→                    onClick={() => setTab(t.id)}
+   393→                    className={`flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-extrabold transition-all ${
+   394→                      tab === t.id
+   395→                        ? 'bg-[#4f3d4a] text-white shadow-sm'
+   396→                        : 'text-[#6f5a68] hover:bg-[var(--pastel-butter)]/50'
+   397→                    }`}
+   398→                  >
+   399→                    <span aria-hidden="true">{t.emoji}</span>
+   400→                    {t.label}
+   401→                    <span className="font-cn text-[11px] opacity-70">{t.cn}</span>
+   402→                    {t.id === 'book' && openCount > 0 && (
+   403→                      <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-extrabold ${tab === t.id ? 'bg-white/20 text-white' : 'bg-[var(--pastel-pink)] text-[#8a4a63]'}`}>
+   404→                        {openCount}
+   405→                      </span>
+   406→                    )}
+   407→                  </button>
+   408→                ))}
+   409→              </div>
+   410→              <p className="text-[10px] font-semibold text-[#b58fa0]">
+   411→                {records.length} lỗi trong sổ · {openCount} chưa khắc phục · lưu trên máy bạn
+   412→              </p>
+   413→            </div>
+   414→          </Reveal>
+   415→
+   416→          <AnimatePresence mode="wait">
+   417→            {/* ================= tab 1: phân tích câu ================= */}
+   418→            {tab === 'analyze' && (
+   419→              <motion.section
+   420→                key="analyze"
+   421→                role="tabpanel"
+   422→                aria-label="Phân tích câu"
+   423→                initial={{ opacity: 0, y: 10 }}
+   424→                animate={{ opacity: 1, y: 0 }}
+   425→                exit={{ opacity: 0, y: -8 }}
+   426→                transition={{ duration: 0.25 }}
+   427→                className="mt-4 space-y-3"
+   428→              >
+   429→                <p className="text-[11px] font-bold text-[#8d7484]">
+   430→                  1️⃣ Viết câu · 2️⃣ AI phân loại lỗi · 3️⃣ Lưu vào sổ · 4️⃣ AI tìm quy luật sau nhiều bài
+   431→                </p>
+   432→
+   433→                <div className="paper-scrap rounded-3xl p-4 sm:p-5">
+   434→                  <label htmlFor="mistake-input" className="text-[10px] font-extrabold uppercase tracking-wider text-[#b58fa0]">
+   435→                    Câu tiếng Trung của bạn
+   436→                  </label>
+   437→                  <textarea
+   438→                    id="mistake-input"
+   439→                    value={input}
+   440→                    onChange={(e) => setInput(e.target.value)}
+   441→                    rows={3}
+   442→                    placeholder="Ví dụ: 我昨天去学校了没有。"
+   443→                    className="mt-2 w-full resize-none rounded-2xl bg-white/80 px-4 py-3 font-cn text-lg text-[#4f3d4a] outline-none ring-1 ring-[#ead9cd] transition-shadow placeholder:text-[#c9a2b3] focus:ring-2 focus:ring-[#e88aa6]"
+   444→                  />
+   445→                  <div className="mt-3 flex flex-wrap items-center gap-2">
+   446→                    <button
+   447→                      type="button"
+   448→                      onClick={() => runAnalyze(input)}
+   449→                      className="rounded-xl bg-[#4f3d4a] px-5 py-2.5 text-xs font-extrabold text-white shadow-[0_3px_0_0_#3a2d36] transition-all hover:-translate-y-0.5 active:translate-y-0.5 active:shadow-none"
+   450→                    >
+   451→                      🔍 Phân tích với AI
+   452→                    </button>
+   453→                    <button
+   454→                      type="button"
+   455→                      onClick={() => {
+   456→                        setInput('')
+   457→                        setAnalysis(null)
+   458→                      }}
+   459→                      className="rounded-xl bg-white/70 px-4 py-2.5 text-xs font-extrabold text-[#8d7484] ring-1 ring-[#ead9cd] transition-all hover:-translate-y-0.5 hover:text-[#c2547e]"
+   460→                    >
+   461→                      ✕ Xoá
+   462→                    </button>
+   463→                    <span className="ml-auto text-[10px] font-semibold text-[#b58fa0]">{input.trim().length} ký tự</span>
+   464→                  </div>
+   465→
+   466→                  <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-dashed border-[#ead9cd] pt-3">
+   467→                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#b58fa0]">Thử câu mẫu:</span>
+   468→                    {EXAMPLE_SENTENCES.map((ex) => (
+   469→                      <button
+   470→                        key={ex}
+   471→                        type="button"
+   472→                        onClick={() => runAnalyze(ex)}
+   473→                        className="rounded-full bg-[var(--pastel-butter)]/50 px-2.5 py-1 font-cn text-xs font-bold text-[#8a6a1f] ring-1 ring-[#f2e2b8] transition-all hover:-translate-y-0.5 hover:bg-[var(--pastel-butter)]"
+   474→                      >
+   475→                        {ex}
+   476→                      </button>
+   477→                    ))}
+   478→                  </div>
+   479→                </div>
+   480→
+   481→                {/* AI đang suy nghĩ */}
+   482→                {thinking && (
+   483→                  <div className="paper-scrap flex items-center justify-center gap-3 rounded-3xl p-8" aria-live="polite">
+   484→                    <motion.span
+   485→                      animate={{ rotate: [0, -8, 8, 0] }}
+   486→                      transition={{ duration: 1, repeat: Infinity }}
+   487→                      className="text-2xl"
+   488→                      aria-hidden="true"
+   489→                    >
+   490→                      🤖
+   491→                    </motion.span>
+   492→                    <p className="text-xs font-extrabold text-[#6d5a94]">AI đang đối chiếu {ERROR_PATTERNS.length} quy luật lỗi thường gặp…</p>
+   493→                  </div>
+   494→                )}
+   495→
+   496→                {/* kết quả */}
+   497→                {analysis && !thinking && (
+   498→                  <div className="space-y-3">
+   499→                    {analysis.issues.length > 0 ? (
+   500→                      <>
+   501→                        <motion.div
+   502→                          initial={{ opacity: 0, y: 10 }}
+   503→                          animate={{ opacity: 1, y: 0 }}
+   504→                          className="paper-scrap flex flex-wrap items-center gap-2.5 rounded-2xl px-4 py-3"
+   505→                        >
+   506→                          <span className="font-display text-sm font-bold text-[#4f3d4a]">
+   507→                            🔍 Phát hiện {analysis.issues.length} lỗi
+   508→                          </span>
+   509→                          <span className="text-[10px] font-semibold text-[#b58fa0]">trong câu: {analysis.raw}</span>
+   510→                          <span className="ml-auto flex flex-wrap items-center gap-2">
+   511→                            <button
+   512→                              type="button"
+   513→                              onClick={saveIssues}
+   514→                              className="rounded-xl bg-[var(--pastel-mint)] px-4 py-2 text-xs font-extrabold text-[#3f6b50] ring-1 ring-[#cfe6d6] transition-all hover:-translate-y-0.5"
+   515→                            >
+   516→                              💾 Lưu {analysis.issues.length} lỗi vào sổ
+   517→                            </button>
+   518→                            <button
+   519→                              type="button"
+   520→                              onClick={() => {
+   521→                                setAnalysis(null)
+   522→                                setInput('')
+   523→                              }}
+   524→                              className="rounded-xl bg-white/70 px-4 py-2 text-xs font-extrabold text-[#8d7484] ring-1 ring-[#ead9cd] transition-all hover:-translate-y-0.5"
+   525→                            >
+   526→                              🔄 Phân tích câu khác
+   527→                            </button>
+   528→                          </span>
+   529→                        </motion.div>
+   530→                        {analysis.issues.map((it, i) => (
+   531→                          <IssueCard key={`${it.patternId}-${i}`} issue={it} index={i} />
+   532→                        ))}
+   533→                      </>
+   534→                    ) : (
+   535→                      <motion.div
+   536→                        initial={{ opacity: 0, y: 10 }}
+   537→                        animate={{ opacity: 1, y: 0 }}
+   538→                        className="paper-scrap rounded-3xl p-5 text-center"
+   539→                      >
+   540→                        <StarDoodle className="mx-auto h-7 w-7" />
+   541→                        <p className="mt-2 font-display text-base font-bold text-[#3f6b50]">
+   542→                          🎉 Không phát hiện lỗi nào trong kho quy luật!
+   543→                        </p>
+   544→                        <p className="mx-auto mt-1 max-w-md text-[11px] font-semibold leading-relaxed text-[#8d7484]">
+   545→                          Câu <span className="font-cn text-sm text-[#4f3d4a]">{analysis.raw}</span> có thể đã đúng, hoặc thuộc dạng lỗi AI
+   546→                          chưa học. Hiện AI nhận diện các quy luật sau:
+   547→                        </p>
+   548→                        <div className="mt-3 flex flex-wrap justify-center gap-1.5">
+   549→                          {patternTopics.map((t) => (
+   550→                            <span key={t} className="rounded-full bg-[var(--pastel-mint)]/40 px-2.5 py-1 text-[10px] font-bold text-[#3f6b50] ring-1 ring-[#cfe6d6]">
+   551→                              {t}
+   552→                            </span>
+   553→                          ))}
+   554→                        </div>
+   555→                      </motion.div>
+   556→                    )}
+   557→                  </div>
+   558→                )}
+   559→              </motion.section>
+   560→            )}
+   561→
+   562→            {/* ================= tab 2: sổ lỗi sai ================= */}
+   563→            {tab === 'book' && (
+   564→              <motion.section
+   565→                key="book"
+   566→                role="tabpanel"
+   567→                aria-label="Sổ lỗi sai"
+   568→                initial={{ opacity: 0, y: 10 }}
+   569→                animate={{ opacity: 1, y: 0 }}
+   570→                exit={{ opacity: 0, y: -8 }}
+   571→                transition={{ duration: 0.25 }}
+   572→                className="mt-4 space-y-3"
+   573→              >
+   574→                <div className="paper-scrap flex flex-wrap items-center gap-2 rounded-2xl px-4 py-3">
+   575→                  <div className="flex flex-wrap gap-1.5">
+   576→                    {(['all', 'grammar', 'particle', 'measure', 'order'] as const).map((f) => {
+   577→                      const n = f === 'all' ? records.length : records.filter((r) => r.type === f).length
+   578→                      const label = f === 'all' ? 'Tất cả' : TYPE_META[f].label
+   579→                      return (
+   580→                        <button
+   581→                          key={f}
+   582→                          type="button"
+   583→                          onClick={() => setFilter(f)}
+   584→                          className={`rounded-full px-3 py-1.5 text-[11px] font-extrabold transition-all ${
+   585→                            filter === f
+   586→                              ? 'bg-[#4f3d4a] text-white shadow-sm'
+   587→                              : 'bg-white/70 text-[#6f5a68] ring-1 ring-[#ead9cd] hover:-translate-y-0.5'
+   588→                          }`}
+   589→                        >
+   590→                          {f === 'all' ? '🗂' : TYPE_META[f].emoji} {label} · {n}
+   591→                        </button>
+   592→                      )
+   593→                    })}
+   594→                  </div>
+   595→                  <input
+   596→                    type="text"
+   597→                    value={q}
+   598→                    onChange={(e) => setQ(e.target.value)}
+   599→                    placeholder="Tìm theo câu, chủ đề, kiến thức…"
+   600→                    aria-label="Tìm trong sổ lỗi sai"
+   601→                    className="ml-auto w-full max-w-56 rounded-xl bg-white/80 px-3.5 py-2 text-xs font-semibold text-[#4f3d4a] outline-none ring-1 ring-[#ead9cd] transition-shadow placeholder:text-[#c9a2b3] focus:ring-2 focus:ring-[#e88aa6]"
+   602→                  />
+   603→                </div>
+   604→
+   605→                {shown.length > 0 ? (
+   606→                  <>
+   607→                    <ul className="space-y-2.5">
+   608→                      {shown.map((r) => (
+   609→                        <RecordCard
+   610→                          key={r.id}
+   611→                          record={r}
+   612→                          confirmDel={confirmDelId === r.id}
+   613→                          askDelete={() => setConfirmDelId(r.id)}
+   614→                          cancelDelete={() => setConfirmDelId(null)}
+   615→                          doDelete={() => removeRecord(r.id)}
+   616→                          toggleResolved={() => toggleResolved(r.id)}
+   617→                          onGo={(key) =>
+   618→                            toast({ title: `🔗 Bài học về ${key}`, description: 'Liên kết tới bài giảng chi tiết sắp ra mắt (demo).' })
+   619→                          }
+   620→                        />
+   621→                      ))}
+   622→                    </ul>
+   623→                    {filtered.length > shown.length && (
+   624→                      <p className="text-center text-[10px] font-bold text-[#b58fa0]">
+   625→                        … và {filtered.length - shown.length} lỗi cũ hơn nữa
+   626→                      </p>
+   627→                    )}
+   628→                  </>
+   629→                ) : (
+   630→                  <div className="paper-scrap rounded-3xl p-8 text-center">
+   631→                    <span className="text-4xl" aria-hidden="true">📖</span>
+   632→                    <p className="mt-2 font-display text-sm font-bold text-[#4f3d4a]">
+   633→                      {records.length === 0 ? 'Sổ lỗi sai còn trống' : 'Không có lỗi nào khớp bộ lọc'}
+   634→                    </p>
+   635→                    <p className="mt-1 text-[11px] font-semibold text-[#8d7484]">
+   636→                      {records.length === 0
+   637→                        ? 'Vào tab "Phân tích câu", viết một câu tiếng Trung và lưu lỗi lại nhé!'
+   638→                        : 'Thử đổi bộ lọc hoặc từ khoá tìm kiếm.'}
+   639→                    </p>
+   640→                  </div>
+   641→                )}
+   642→              </motion.section>
+   643→            )}
+   644→
+   645→            {/* ================= tab 3: quy luật & báo cáo ================= */}
+   646→            {tab === 'report' && (
+   647→              <motion.section
+   648→                key="report"
+   649→                role="tabpanel"
+   650→                aria-label="Quy luật của bạn"
+   651→                initial={{ opacity: 0, y: 10 }}
+   652→                animate={{ opacity: 1, y: 0 }}
+   653→                exit={{ opacity: 0, y: -8 }}
+   654→                transition={{ duration: 0.25 }}
+   655→                className="mt-4 space-y-3"
+   656→              >
+   657→                {/* AI kết luận */}
+   658→                <motion.div
+   659→                  initial={{ opacity: 0, y: 12 }}
+   660→                  animate={{ opacity: 1, y: 0 }}
+   661→                  className="paper-scrap relative overflow-hidden rounded-3xl p-5 sm:p-6"
+   662→                  style={{ background: 'linear-gradient(130deg, rgba(226,214,240,0.55), rgba(255,253,246,0.92) 55%, rgba(243,196,211,0.35))' }}
+   663→                >
+   664→                  <StarDoodle className="absolute right-6 top-4 h-6 w-6" color="#c9a2b3" />
+   665→                  <div className="flex items-center gap-2.5">
+   666→                    <span className="grid h-11 w-11 place-items-center rounded-2xl bg-white/70 text-2xl shadow-sm" aria-hidden="true">
+   667→                      🤖
+   668→                    </span>
+   669→                    <div>
+   670→                      <p className="text-[10px] font-extrabold uppercase tracking-wider text-[#8a6a1f]">
+   671→                        AI kết luận · phân tích {conclusion.open} lỗi chưa khắc phục
+   672→                      </p>
+   673→                      <p className="font-display text-lg font-bold leading-snug text-[#4f3d4a] sm:text-xl">{conclusion.headline}</p>
+   674→                    </div>
+   675→                    <span className="ml-auto hidden rounded-full bg-[var(--pastel-butter)] px-3 py-1 text-[10px] font-extrabold text-[#8a6a1f] ring-1 ring-[#f2e2b8] sm:block">
+   676→                      Mức độ: {conclusion.strength}
+   677→                    </span>
+   678→                  </div>
+   679→                  <p className="mt-3 max-w-2xl text-xs font-semibold leading-relaxed text-[#5d4a57]">{conclusion.body}</p>
+   680→
+   681→                  <div className="mt-3.5 rounded-2xl bg-[var(--pastel-butter)]/50 p-3.5 ring-1 ring-[#f2e2b8]">
+   682→                    <p className="text-[10px] font-extrabold uppercase tracking-wider text-[#8a6a1f]">💊 Cách chữa</p>
+   683→                    <p className="mt-1 text-xs font-semibold leading-relaxed text-[#5d4a57]">{conclusion.advice}</p>
+   684→                  </div>
+   685→
+   686→                  <div className="mt-3.5 flex flex-wrap items-center gap-1.5">
+   687→                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#b58fa0]">Luyện tập chú trọng:</span>
+   688→                    {conclusion.drills.map((d) => (
+   689→                      <button
+   690→                        key={d.label}
+   691→                        type="button"
+   692→                        onClick={() => toast({ title: `🚀 ${d.label}`, description: 'Đã thêm vào kế hoạch ôn tập tuần này (demo).' })}
+   693→                        className="rounded-full bg-white/70 px-3 py-1.5 text-[11px] font-extrabold text-[#6f5a68] ring-1 ring-[#ead9cd] transition-all hover:-translate-y-0.5 hover:bg-[var(--pastel-lilac)]/40 hover:text-[#6d5a94]"
+   694→                      >
+   695→                        {d.emoji} {d.label}
+   696→                      </button>
+   697→                    ))}
+   698→                  </div>
+   699→                </motion.div>
+   700→
+   701→                <div className="grid gap-3 lg:grid-cols-5">
+   702→                  {/* thanh quy luật theo kiến thức */}
+   703→                  <Reveal className="lg:col-span-3">
+   704→                    <div className="paper-scrap h-full rounded-3xl p-4 sm:p-5">
+   705→                      <h3 className="font-display text-sm font-bold text-[#4f3d4a]">
+   706→                        Quy luật theo kiến thức <span className="ml-1 font-cn text-xs text-[#b58fa0]">知识规律</span>
+   707→                      </h3>
+   708→                      {conclusion.stats.length > 0 ? (
+   709→                        <ul className="mt-4 space-y-3">
+   710→                          {conclusion.stats.slice(0, 6).map((s, i) => (
+   711→                            <li key={s.key}>
+   712→                              <div className="flex items-baseline justify-between gap-2 text-[11px] font-bold text-[#5d4a57]">
+   713→                                <span className="truncate">{s.key}</span>
+   714→                                <span className="shrink-0 text-[#b58fa0]">
+   715→                                  {s.count} lần · {s.pct}%
+   716→                                </span>
+   717→                              </div>
+   718→                              <div className="mt-1 h-3 w-full overflow-hidden rounded-full bg-[var(--cream)] ring-1 ring-[#ead9cd]">
+   719→                                <motion.div
+   720→                                  initial={{ width: 0 }}
+   721→                                  animate={{ width: `${Math.max(s.pct, 6)}%` }}
+   722→                                  transition={{ duration: 0.7, delay: 0.1 + i * 0.07, ease: [0.22, 1, 0.36, 1] }}
+   723→                                  className="h-full rounded-full"
+   724→                                  style={{ background: knowledgeColor(s.key) }}
+   725→                                />
+   726→                              </div>
+   727→                            </li>
+   728→                          ))}
+   729→                        </ul>
+   730→                      ) : (
+   731→                        <p className="mt-4 text-[11px] font-semibold text-[#8d7484]">Chưa có dữ liệu — hãy lưu vài lỗi trước nhé!</p>
+   732→                      )}
+   733→                    </div>
+   734→                  </Reveal>
+   735→
+   736→                  {/* theo loại lỗi */}
+   737→                  <Reveal delay={0.08} className="lg:col-span-2">
+   738→                    <div className="paper-scrap h-full rounded-3xl p-4 sm:p-5">
+   739→                      <h3 className="font-display text-sm font-bold text-[#4f3d4a]">
+   740→                        Theo loại lỗi <span className="ml-1 font-cn text-xs text-[#b58fa0]">错误类型</span>
+   741→                      </h3>
+   742→                      <ul className="mt-3.5 space-y-2">
+   743→                        {conclusion.byType.map(({ type, count }) => {
+   744→                          const meta = TYPE_META[type]
+   745→                          return (
+   746→                            <li key={type} className="flex items-center gap-2.5 rounded-2xl bg-[var(--cream)] px-3 py-2 ring-1 ring-[#ead9cd]">
+   747→                              <span className="text-base" aria-hidden="true">{meta.emoji}</span>
+   748→                              <span className="text-[11px] font-extrabold text-[#5d4a57]">{meta.label}</span>
+   749→                              <span className="ml-auto font-display text-sm font-extrabold" style={{ color: meta.color }}>
+   750→                                {count}
+   751→                              </span>
+   752→                            </li>
+   753→                          )
+   754→                        })}
+   755→                      </ul>
+   756→                    </div>
+   757→                  </Reveal>
+   758→                </div>
+   759→
+   760→                {/* lỗi mới nhất */}
+   761→                {records.length > 0 && (
+   762→                  <Reveal delay={0.1}>
+   763→                    <div className="paper-scrap rounded-3xl p-4 sm:p-5">
+   764→                      <h3 className="font-display text-sm font-bold text-[#4f3d4a]">
+   765→                        Lỗi mới nhất <span className="ml-1 font-cn text-xs text-[#b58fa0]">最近</span>
+   766→                      </h3>
+   767→                      <ul className="mt-3 space-y-1.5">
+   768→                        {[...records]
+   769→                          .sort((a, b) => b.createdAt - a.createdAt)
+   770→                          .slice(0, 5)
+   771→                          .map((r) => (
+   772→                            <li key={r.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-[var(--cream)] px-3 py-2 ring-1 ring-[#ead9cd]">
+   773→                              <span className="text-[10px] font-extrabold text-[#b58fa0]">{fmtDate(r.createdAt)}</span>
+   774→                              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: TYPE_META[r.type].color }} aria-hidden="true" />
+   775→                              <span className={`font-cn text-sm ${r.resolved ? 'text-[#b58fa0] line-through' : 'text-[#4f3d4a]'}`}>{r.raw}</span>
+   776→                              <span className="text-[10px] text-[#b58fa0]" aria-hidden="true">→</span>
+   777→                              <span className="font-cn text-sm text-[#3f6b50]">{r.corrected}</span>
+   778→                            </li>
+   779→                          ))}
+   780→                      </ul>
+   781→                    </div>
+   782→                  </Reveal>
+   783→                )}
+   784→
+   785→                {/* vùng dữ liệu */}
+   786→                <div className="flex flex-wrap items-center gap-2 pt-1">
+   787→                  <p className="text-[10px] font-semibold text-[#b58fa0]">
+   788→                    📌 Sổ lỗi sai của bạn lưu ngay trên thiết bị (localStorage) — AI kết luận lại mỗi khi có lỗi mới.
+   789→                  </p>
+   790→                  {confirmReset ? (
+   791→                    <span className="ml-auto flex items-center gap-1.5">
+   792→                      <span className="text-[10px] font-extrabold text-[#c2547e]">Nạp lại 14 lỗi demo?</span>
+   793→                      <button
+   794→                        type="button"
+   795→                        onClick={resetDemo}
+   796→                        className="rounded-xl bg-[#d2495f] px-3.5 py-2 text-[11px] font-extrabold text-white"
+   797→                      >
+   798→                        ✓ Nạp lại
+   799→                      </button>
+   800→                      <button
+   801→                        type="button"
+   802→                        onClick={() => setConfirmReset(false)}
+   803→                        className="rounded-xl bg-white/70 px-3.5 py-2 text-[11px] font-extrabold text-[#8d7484] ring-1 ring-[#ead9cd]"
+   804→                      >
+   805→                        ✕ Thôi
+   806→                      </button>
+   807→                    </span>
+   808→                  ) : (
+   809→                    <button
+   810→                      type="button"
+   811→                      onClick={() => setConfirmReset(true)}
+   812→                      className="ml-auto rounded-xl bg-white/70 px-4 py-2 text-[11px] font-extrabold text-[#8d7484] ring-1 ring-[#ead9cd] transition-all hover:-translate-y-0.5 hover:text-[#c2547e]"
+   813→                    >
+   814→                      🔄 Nạp lại dữ liệu demo
+   815→                    </button>
+   816→                  )}
+   817→                </div>
+   818→              </motion.section>
+   819→            )}
+   820→          </AnimatePresence>
+   821→        </div>
+   822→      </main>
+   823→      <Footer />
+   824→    </div>
+   825→  )
+   826→}
+   827→

@@ -14,6 +14,7 @@ import Dictionary from '@/components/dictionary/dictionary'
 import VideoLearning from '@/components/video/video-learning'
 import SpeakingHub from '@/components/speaking/speaking-hub'
 import MistakeHub from '@/components/mistakes/mistake-hub'
+import TwinProfile from '@/components/twin/twin-profile'
 import ExamHub from '@/components/exam/exam-hub'
 import Practice from '@/components/exam/practice'
 import MockExam from '@/components/exam/mock-exam'
@@ -104,6 +105,8 @@ export default function Home() {
     content = <SpeakingHub />
   } else if (route === '/mistakes') {
     content = <MistakeHub />
+  } else if (route === '/twin') {
+    content = <TwinProfile />
   } else if (route === '/admin') {
     content = <AdminHub />
   } else if (route === '/login' || route === '/register') {
