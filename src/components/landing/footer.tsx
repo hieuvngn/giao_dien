@@ -28,6 +28,7 @@ export default function Footer() {
           <a href="#/shadowing" className="hover:text-[#e8737f]">Shadowing</a>
           <a href="#/video" className="hover:text-[#e8737f]">AI Video</a>
           <a href="#/speaking" className="hover:text-[#e8737f]">Luyện nói</a>
+          <a href="#/mistakes" className="hover:text-[#e8737f]">Sổ lỗi sai</a>
           <a href="#/create-file" className="hover:text-[#e8737f]">Tạo vở tập viết</a>
           <a href="#/login" className="hover:text-[#e8737f]">Đăng nhập</a>
           <a href="#/admin" className="hover:text-[#e8737f]">Quản trị</a>
