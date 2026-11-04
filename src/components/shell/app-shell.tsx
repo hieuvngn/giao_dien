@@ -33,6 +33,7 @@ const NAV_SECTIONS: { title: string; items: NavItem[] }[] = [
       { href: '#/review', char: '复', label: 'Ôn tập & Thống kê', kind: 'route' },
       { href: '#/exam', char: '试', label: 'Đề thi & Luyện tập', kind: 'route' },
       { href: '#/leaderboard', char: '榜', label: 'Bảng xếp hạng', kind: 'route' },
+      { href: '#/speaking', char: '说', label: 'Luyện nói cùng AI', kind: 'route' },
     ],
   },
   {
