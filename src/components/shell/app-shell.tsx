@@ -279,6 +279,7 @@ function AppHeader({
                       { icon: '🃏', label: 'Bộ thẻ của tôi', href: '#/my-decks' },
                       { icon: '🏅', label: 'Thành tựu', href: '#/achievements' },
                       { icon: '⚙️', label: 'Cài đặt học tập', href: '#/profile' },
+                      { icon: '🛡️', label: 'Trang quản trị', href: '#/admin' },
                     ].map((m) => (
                       <li key={m.label}>
                         <a

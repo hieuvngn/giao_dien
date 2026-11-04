@@ -29,6 +29,7 @@ export default function Footer() {
           <a href="#/video" className="hover:text-[#e8737f]">AI Video</a>
           <a href="#/create-file" className="hover:text-[#e8737f]">Tạo vở tập viết</a>
           <a href="#/login" className="hover:text-[#e8737f]">Đăng nhập</a>
+          <a href="#/admin" className="hover:text-[#e8737f]">Quản trị</a>
         </nav>
 
         <p className="flex items-center gap-1.5 text-xs font-semibold text-[#b58fa0]">

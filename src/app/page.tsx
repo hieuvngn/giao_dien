@@ -17,6 +17,7 @@ import Practice from '@/components/exam/practice'
 import MockExam from '@/components/exam/mock-exam'
 import Radicals from '@/components/radicals/radicals'
 import Auth from '@/components/auth/auth'
+import AdminHub from '@/components/admin/admin-hub'
 import MyDecks from '@/components/account/my-decks'
 import Achievements from '@/components/account/achievements'
 import Profile from '@/components/account/profile'
@@ -97,6 +98,8 @@ export default function Home() {
     content = <Achievements />
   } else if (route === '/profile') {
     content = <Profile />
+  } else if (route === '/admin') {
+    content = <AdminHub />
   } else if (route === '/login' || route === '/register') {
     content = <Auth key={route} initialMode={route === '/register' ? 'register' : 'login'} />
   } else {
